@@ -372,3 +372,26 @@ hw.module @DriveOnlyInNonSuspendBlock(in %v : f64, in %w : i42, in %c : i1) {
 func.func private @use_i42(%arg0: i42)
 func.func private @use_inout_i42(%arg0: !llhd.ref<i42>)
 func.func private @maybe_side_effecting()
+
+// Drives to a constant field projection of a signal declared outside the
+// process are hoisted like drives to the signal itself.
+// CHECK-LABEL: @HoistFieldDrive
+hw.module @HoistFieldDrive(in %v : i8) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %x = llhd.sig %init : !hw.array<2xi8>
+  // CHECK: [[E:%.+]] = llhd.sig.array_get %x[%false]
+  %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+  // CHECK: [[P:%.+]] = llhd.process -> i8
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    // CHECK-NOT: llhd.drv
+    // CHECK: llhd.wait yield
+    %n = comb.add %v, %v : i8
+    llhd.drv %e, %n after %t : i8
+    llhd.wait (%v : i8), ^bb1
+  }
+  // CHECK: llhd.drv [[E]], [[P]]
+}

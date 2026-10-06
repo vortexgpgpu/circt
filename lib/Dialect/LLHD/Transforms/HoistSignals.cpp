@@ -304,6 +304,67 @@ void DriveHoister::hoist() {
   hoistDrives();
 }
 
+/// If `value` is a chain of constant-index `llhd.sig.array_get` and
+/// `llhd.sig.struct_extract` ops rooted at an `llhd.sig`, return the root and
+/// the field path.
+static bool getFieldPath(Value value, Value &root,
+                         SmallVectorImpl<std::string> &path) {
+  SmallVector<std::string> reversed;
+  while (true) {
+    if (value.getDefiningOp<SignalOp>()) {
+      root = value;
+      path.assign(reversed.rbegin(), reversed.rend());
+      return true;
+    }
+    if (auto op = value.getDefiningOp<SigArrayGetOp>()) {
+      IntegerAttr index;
+      if (!matchPattern(op.getIndex(), m_Constant(&index)))
+        return false;
+      reversed.push_back("[" + std::to_string(index.getValue().getZExtValue()) +
+                         "]");
+      value = op.getInput();
+      continue;
+    }
+    if (auto op = value.getDefiningOp<SigStructExtractOp>()) {
+      // Union members overlap each other; only struct fields are disjoint.
+      if (!hw::type_isa<hw::StructType>(op.getInput().getType().getNestedType()))
+        return false;
+      reversed.push_back("." + op.getField().str());
+      value = op.getInput();
+      continue;
+    }
+    if (auto op = value.getDefiningOp<SigExtractOp>()) {
+      IntegerAttr low;
+      if (!matchPattern(op.getLowBit(), m_Constant(&low)))
+        return false;
+      auto width = hw::getBitWidth(op.getResult().getType().getNestedType());
+      reversed.push_back("{" + std::to_string(low.getValue().getZExtValue()) +
+                         ":" + std::to_string(width) + "}");
+      value = op.getInput();
+      continue;
+    }
+    return false;
+  }
+}
+
+/// Whether two field paths of the same root may refer to overlapping bits.
+/// Paths overlap if one is a prefix of the other, or if they diverge at bit
+/// slices with intersecting ranges.
+static bool fieldPathsOverlap(ArrayRef<std::string> a, ArrayRef<std::string> b) {
+  for (unsigned i = 0, e = std::min(a.size(), b.size()); i < e; ++i) {
+    if (a[i] == b[i])
+      continue;
+    if (a[i][0] == '{' && b[i][0] == '{') {
+      unsigned alo, aw, blo, bw;
+      sscanf(a[i].c_str(), "{%u:%u}", &alo, &aw);
+      sscanf(b[i].c_str(), "{%u:%u}", &blo, &bw);
+      return alo < blo + bw && blo < alo + aw;
+    }
+    return false;
+  }
+  return true;
+}
+
 /// Identify any slots driven under the current region which are candidates for
 /// hoisting. This checks if the slots escape or alias in any way which we
 /// cannot reason about.
@@ -315,11 +376,35 @@ void DriveHoister::findHoistableSlots() {
       return;
 
     // We can only hoist drives to slots declared by a `llhd.sig` op outside the
-    // current region.
-    if (!slot.getDefiningOp<llhd::SignalOp>())
-      return;
+    // current region, or to constant field projections of such a signal
+    // (created by Mem2Reg for processes that only assign one element of an
+    // aggregate), provided the process accesses no overlapping part of it.
     if (!slot.getParentRegion()->isProperAncestor(&processOp.getBody()))
       return;
+    if (!slot.getDefiningOp<llhd::SignalOp>()) {
+      Value root;
+      SmallVector<std::string> path;
+      if (!getFieldPath(slot, root, path))
+        return;
+      bool overlaps = false;
+      processOp.walk([&](Operation *user) {
+        if (!isa<ProbeOp, DriveOp>(user) || user->getOperand(0) == slot)
+          return;
+        Value otherRoot;
+        SmallVector<std::string> otherPath;
+        if (!getFieldPath(user->getOperand(0), otherRoot, otherPath)) {
+          // Unknown reference: conservatively assume it may alias.
+          overlaps |= !isa<SignalOp>(user->getOperand(0).getDefiningOp()) ||
+                      user->getOperand(0) == root;
+          return;
+        }
+        if (otherRoot != root)
+          return;
+        overlaps |= fieldPathsOverlap(path, otherPath);
+      });
+      if (overlaps)
+        return;
+    }
 
     // Ensure the slot is not used in any way we cannot reason about.
     if (!llvm::all_of(slot.getUsers(), [&](auto *user) {
