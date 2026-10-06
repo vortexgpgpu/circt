@@ -359,6 +359,9 @@ void ModuleContext::aggregateDrives(Signal &signal) {
   // its default value without breaking semantics.
   SmallSetVector<Value, 8> worklist;
   worklist.insert(signal.value);
+  // Aliasing projections of the same subsignal are listed among its slices.
+  for (auto slice : signal.slices)
+    worklist.insert(slice.value);
   bool hasUnknownUses = false;
   while (!worklist.empty() && !hasUnknownUses) {
     auto value = worklist.pop_back_val();
@@ -456,18 +459,41 @@ void ModuleContext::addDefaultDriveSlices(Signal &signal,
   // currently never create non-constant signal values, so this is fine for now.
   // We'll want to revisit this at a later point, though.
   //
-  // This currently does not work for nested signals. To support those, we
-  // potentially have to walk up our parent signals to find an actual `llhd.sig`
-  // op, and then descend back down, extracting subfields.
-  auto signalOp = signal.value.getDefiningOp<SignalOp>();
+  // For nested signals, walk up to the root `llhd.sig` and descend back down,
+  // extracting the subfield from the root's initial value. This is only valid
+  // if no ancestor is driven directly; such a drive would overlap with the
+  // gap fillers we create here.
+  for (auto *ancestor = signal.parent; ancestor; ancestor = ancestor->parent)
+    for (auto slice : ancestor->slices)
+      for (auto &use : slice.value.getUses())
+        if (isa<DriveOp>(use.getOwner()) && use.getOperandNumber() == 0)
+          return;
+  SmallVector<Signal *> chain;
+  for (auto *s = &signal; s; s = s->parent)
+    chain.push_back(s);
+  auto signalOp = chain.back()->value.getDefiningOp<SignalOp>();
   if (!signalOp || !signalOp.getInit())
     return;
-  auto defaultValue = signalOp.getInit();
 
   // Create drives with the default value for the gaps we've filled in.
   ImplicitLocOpBuilder builder(signal.value.getLoc(),
                                signal.value.getContext());
   builder.setInsertionPointAfterValue(signal.value);
+  Value defaultValue = signalOp.getInit();
+  for (auto *s : llvm::drop_begin(llvm::reverse(chain))) {
+    auto parentType = defaultValue.getType();
+    if (auto arrayType = hw::type_dyn_cast<hw::ArrayType>(parentType)) {
+      auto index = hw::ConstantOp::create(
+          builder,
+          APInt(llvm::Log2_64_Ceil(arrayType.getNumElements()), s->indexInParent));
+      defaultValue = hw::ArrayGetOp::create(builder, defaultValue, index);
+    } else if (auto structType = hw::type_dyn_cast<hw::StructType>(parentType)) {
+      defaultValue = hw::StructExtractOp::create(
+          builder, defaultValue, structType.getElements()[s->indexInParent]);
+    } else {
+      return;
+    }
+  }
 
   for (auto &slice : gapSlices) {
     LLVM_DEBUG(llvm::dbgs()

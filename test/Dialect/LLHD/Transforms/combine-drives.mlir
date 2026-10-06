@@ -294,6 +294,48 @@ hw.module @FillArrayGaps(in %u: i42) {
   llhd.drv %2, %u after %1 : i42
 }
 
+// Partially driven fields of an aggregate signal take the missing bits from
+// the root signal's initial value (e.g. bit-interleaved generate assigns).
+// CHECK-LABEL: @FillNestedGaps
+hw.module @FillNestedGaps(in %u: i1, in %v: i8) {
+  %c0_i1 = hw.constant 0 : i1
+  %c1_i1 = hw.constant 1 : i1
+  %c0_i3 = hw.constant 0 : i3
+  %c2_i3 = hw.constant 2 : i3
+  %0 = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig [[INIT:%.+]] :
+  // CHECK: llhd.drv %a, {{%.+}} after
+  // CHECK-NOT: llhd.drv
+  // CHECK: hw.array_get [[INIT]]
+  %a = llhd.sig %0 : !hw.array<2xi8>
+  %2 = llhd.sig.array_get %a[%c1_i1] : <!hw.array<2xi8>>
+  llhd.drv %2, %v after %1 : i8
+  %3 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+  %4 = llhd.sig.extract %3 from %c0_i3 : <i8> -> <i1>
+  llhd.drv %4, %u after %1 : i1
+  %5 = llhd.sig.extract %3 from %c2_i3 : <i8> -> <i1>
+  llhd.drv %5, %u after %1 : i1
+}
+
+// A nested field cannot be filled from the initial value if an ancestor is
+// also driven directly.
+// CHECK-LABEL: @SkipNestedGapsOnParentDrive
+hw.module @SkipNestedGapsOnParentDrive(in %u: i1, in %w: !hw.array<2xi8>, in %en: i1) {
+  %c0_i1 = hw.constant 0 : i1
+  %c0_i3 = hw.constant 0 : i3
+  %0 = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig
+  // CHECK: llhd.drv %a, %w after {{%.+}} if %en
+  // CHECK: llhd.drv {{%.+}}, %u after
+  %a = llhd.sig %0 : !hw.array<2xi8>
+  llhd.drv %a, %w after %1 if %en : !hw.array<2xi8>
+  %3 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+  %4 = llhd.sig.extract %3 from %c0_i3 : <i8> -> <i1>
+  llhd.drv %4, %u after %1 : i1
+}
+
 // Don't use default value to fill gaps if there are unknown signal uses. These
 // might drive a signal value that would conflict with the additional default
 // value drive.
