@@ -32,6 +32,20 @@ def InlineCallsPass : Pass<"llhd-inline-calls", "ModuleOp"> {
   ];
 }
 
+def LowerRefPortsPass : Pass<"llhd-lower-ref-ports", "mlir::ModuleOp"> {
+  let summary = "Replace signal reference ports with value ports";
+  let description = [{
+    Interface ports without a modport and other `inout`-like connections are
+    imported as `!llhd.ref<T>` module ports. If a private module only probes
+    such a port, it becomes an input of type `T` and the probe moves to every
+    instantiation. If the module only drives it, once and unconditionally, the
+    driven value becomes a new output and the drive moves to every
+    instantiation. Modules are processed children first, so references that
+    are only forwarded through a hierarchy of modules are lowered all the way
+    up to the module that declares the signal, where Sig2Reg can promote it.
+  }];
+}
+
 def Sig2Reg : Pass<"llhd-sig2reg", "hw::HWModuleOp"> {
   let summary = "promote LLHD signals to SSA values";
 

@@ -566,18 +566,23 @@ void circt::populateLlhdToCorePipeline(
   // to `comb.mux`.
   modulePM.addPass(createMapArithToCombPass(true));
 
+  // Turn reference ports into value ports, moving their probes and drives up
+  // to the module that declares the signal.
+  pm.addPass(llhd::createLowerRefPortsPass());
+
   // Simplify module-level signals.
-  modulePM.addPass(llhd::createCombineDrivesPass());
-  modulePM.addPass(llhd::createSig2Reg());
-  modulePM.addPass(mlir::createCSEPass());
-  modulePM.addPass(mlir::createCanonicalizerPass());
+  auto &signalPM = pm.nest<hw::HWModuleOp>();
+  signalPM.addPass(llhd::createCombineDrivesPass());
+  signalPM.addPass(llhd::createSig2Reg());
+  signalPM.addPass(mlir::createCSEPass());
+  signalPM.addPass(mlir::createCanonicalizerPass());
 
   // Map `seq.firreg` with array type and `hw.array_inject` self-feedback to
   // `seq.firmem` ops.
   if (options.detectMemories) {
-    modulePM.addPass(seq::createRegOfVecToMem());
-    modulePM.addPass(mlir::createCSEPass());
-    modulePM.addPass(mlir::createCanonicalizerPass());
+    signalPM.addPass(seq::createRegOfVecToMem());
+    signalPM.addPass(mlir::createCSEPass());
+    signalPM.addPass(mlir::createCanonicalizerPass());
   }
 
   if (options.inferClockPorts) {
