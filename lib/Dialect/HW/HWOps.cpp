@@ -2985,9 +2985,13 @@ static LogicalResult canonicalizeArrayInjectChain(ArrayInjectOp op,
   // If this inject is only used as an input to another inject, don't try to
   // canonicalize it. It will be included in that other op's canonicalization
   // attempt. This avoids doing redundant work.
+  // Only defer if that other inject has a constant index; an inject at a
+  // dynamic index stops the chain walk and would never get to us.
   if (op->hasOneUse()) {
     auto &use = *op->use_begin();
-    if (isa<ArrayInjectOp>(use.getOwner()) && use.getOperandNumber() == 0)
+    auto user = dyn_cast<ArrayInjectOp>(use.getOwner());
+    if (user && use.getOperandNumber() == 0 &&
+        matchPattern(user.getIndex(), mlir::m_Constant()))
       return failure();
   }
 

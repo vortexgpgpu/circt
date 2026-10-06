@@ -1226,6 +1226,24 @@ hw.module @ArrayInjectToSameIndexRecursion(in %i: i0, in %e: i1, out z: !hw.arra
   hw.output %1 : !hw.array<1xi1>
 }
 
+// A constant-index inject chain that overwrites every element is turned into
+// an array_create even if its only user is an inject at a dynamic index (which
+// does not walk the chain). This also breaks the false self-dependence of
+// `for (i...) a[i] = 0; a[sel] = x;` in a combinational process.
+// CHECK-LABEL: @ArrayInjectChainBelowDynamicInject(
+hw.module @ArrayInjectChainBelowDynamicInject(in %s: i1, in %x: i8, out z: !hw.array<2xi8>) {
+  %c0 = hw.constant 0 : i8
+  %false = hw.constant false
+  %true = hw.constant true
+  // CHECK-NEXT: [[ZERO:%.+]] = hw.aggregate_constant [0 : i8, 0 : i8]
+  // CHECK-NEXT: [[DYN:%.+]] = hw.array_inject [[ZERO]][%s], %x
+  // CHECK-NEXT: hw.output [[DYN]]
+  %0 = hw.array_inject %2[%false], %c0 : !hw.array<2xi8>, i1
+  %1 = hw.array_inject %0[%true], %c0 : !hw.array<2xi8>, i1
+  %2 = hw.array_inject %1[%s], %x : !hw.array<2xi8>, i1
+  hw.output %2 : !hw.array<2xi8>
+}
+
 // CHECK-LABEL: hw.module @struct_create
 // CHECK-NEXT:    %0 = hw.aggregate_constant [0 : i2, 1 : i2, 0 : i2] : !hw.struct<a: i2, b: i2, c: i2>
 // CHECK-NEXT:    hw.output %0 : !hw.struct<a: i2, b: i2, c: i2>
