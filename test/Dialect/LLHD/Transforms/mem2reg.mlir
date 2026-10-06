@@ -1268,10 +1268,12 @@ hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %
   }
 }
 
-// Don't promote a signal if a projection op (like sig.array_get) has a nested
-// projection user (like sig.extract) in a different block. Mem2Reg rewrites
-// signal references across block boundaries and would break the projection
-// chain, causing getProjections to encounter a BlockArgument.
+// A projection op (like sig.array_get) with a nested projection user (like
+// sig.extract) in a different block cannot be promoted as part of its root
+// signal, since Mem2Reg rewrites signal references across block boundaries.
+// Since the process only accesses the element, the element projection is
+// hoisted and promoted as a slot of its own instead, with the nested
+// sig.extract becoming a bit update of that slot.
 // CHECK-LABEL: @NestedProjectionAcrossBlocks
 hw.module @NestedProjectionAcrossBlocks(in %v : i4) {
   %t = llhd.constant_time <0ns, 0d, 1e>
@@ -1281,14 +1283,21 @@ hw.module @NestedProjectionAcrossBlocks(in %v : i4) {
   %c4 = hw.constant -4 : i3
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
   // CHECK: %mem = llhd.sig
+  // CHECK-NEXT: [[E:%.+]] = llhd.sig.array_get %mem[%true]
+  // CHECK-NEXT: llhd.process
   %mem = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
+    // CHECK: llhd.drv [[E]], %c0_i8
     %e = llhd.sig.array_get %mem[%true] : <!hw.array<2xi8>>
     llhd.drv %e, %c0 after %t : i8
     llhd.wait delay %d, ^bb1
   ^bb1:
     // This sig.extract is a nested projection of %e, but in a different block.
-    // CHECK: llhd.sig.extract
+    // CHECK: [[OLD:%.+]] = llhd.prb [[E]]
+    // CHECK: [[LO:%.+]] = comb.extract [[OLD]] from 0
+    // CHECK: [[NEW:%.+]] = comb.concat %v, [[LO]]
+    // CHECK: llhd.drv [[E]], [[NEW]]
+    // CHECK-NOT: llhd.sig.extract
     %sub = llhd.sig.extract %e from %c4 : <i8> -> <i4>
     llhd.drv %sub, %v after %t : i4
     llhd.halt
@@ -1525,5 +1534,83 @@ hw.module @InitializedDelayedPartialDrive(in %u: !hw.array<4xi42>, in %v: i42, i
     func.call @use_array_i42(%value) : (!hw.array<4xi42>) -> ()
     // CHECK-NEXT: llhd.halt
     llhd.halt
+// A process that only assigns one element of a module-level signal (as one
+// `always` block per element in a generate loop does) promotes that element as
+// a slot of its own. Reads of the element through a whole-signal probe are
+// narrowed to the element, so the process no longer drives the whole signal.
+// CHECK-LABEL: @FieldSlotPerElement
+hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %true = hw.constant true
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK: %x = llhd.sig
+  // CHECK-NEXT: [[E0:%.+]] = llhd.sig.array_get %x[%false]
+  // CHECK-NEXT: llhd.process
+  // CHECK-NOT: llhd.prb %x
+  // CHECK: [[SUM:%.+]] = comb.add %v, %u
+  // CHECK: llhd.drv [[E0]], [[SUM]]
+  // CHECK: [[E1:%.+]] = llhd.sig.array_get %x[%true]
+  // CHECK-NEXT: llhd.process
+  // CHECK: llhd.drv [[E1]], %u
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+    llhd.drv %e, %v after %t : i8
+    %w = llhd.prb %x : !hw.array<2xi8>
+    %old = hw.array_get %w[%false] : !hw.array<2xi8>, i1
+    %n = comb.add %old, %u : i8
+    llhd.drv %e, %n after %t : i8
+    llhd.wait (%v, %u : i8, i8), ^bb1
+  }
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %e = llhd.sig.array_get %x[%true] : <!hw.array<2xi8>>
+    llhd.drv %e, %u after %t : i8
+    llhd.wait (%u : i8), ^bb1
+  }
+}
+
+// Field slots are not formed if the region also accesses an overlapping part
+// of the signal; the whole signal is promoted as before.
+// CHECK-LABEL: @NoFieldSlotOnOverlap
+hw.module @NoFieldSlotOnOverlap(in %v : i8, in %w : !hw.array<2xi8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK: %x = llhd.sig
+  // CHECK-NEXT: llhd.process
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    llhd.drv %x, %w after %t : !hw.array<2xi8>
+    %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+    llhd.drv %e, %v after %t : i8
+    llhd.wait (%v : i8), ^bb1
+  }
+}
+
+// Union members overlap: drives to different members are not disjoint field
+// slots.
+// CHECK-LABEL: @NoFieldSlotForUnionMembers
+hw.module @NoFieldSlotForUnionMembers(in %v : i8, in %w : i4) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %c0 = hw.constant 0 : i8
+  %init = hw.union_create "a", %c0 : !hw.union<a: i8, b: i4>
+  // CHECK: %x = llhd.sig
+  // CHECK-NEXT: llhd.process
+  %x = llhd.sig %init : <!hw.union<a: i8, b: i4>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %a = llhd.sig.struct_extract %x["a"] : <!hw.union<a: i8, b: i4>>
+    llhd.drv %a, %v after %t : i8
+    %b = llhd.sig.struct_extract %x["b"] : <!hw.union<a: i8, b: i4>>
+    llhd.drv %b, %w after %t : i4
+    llhd.wait (%v, %w : i8, i4), ^bb1
   }
 }

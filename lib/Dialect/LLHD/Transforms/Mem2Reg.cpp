@@ -17,6 +17,7 @@
 #include "mlir/IR/Dominance.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Debug.h"
+#include <map>
 #include "llvm/Support/GenericIteratedDominanceFrontier.h"
 
 #define DEBUG_TYPE "llhd-mem2reg"
@@ -727,6 +728,7 @@ struct Promoter {
   Promoter(Region &region) : region(region) {}
   LogicalResult promote();
 
+  void hoistFieldProjections();
   void findPromotableSlots();
   Value resolveSlot(Value projectionOrSlot);
   void populateSlotOps();
@@ -783,6 +785,10 @@ struct Promoter {
   /// A set of all promotable signal SSA values. This is the union of `slots`
   /// and `projections` of those slots.
   SmallDenseSet<Value> promotable;
+  /// Constant-index field projections of signals defined outside the region,
+  /// which the region accesses disjointly. These are promoted as slots of
+  /// their own, see `hoistFieldProjections`.
+  SmallDenseSet<Value> fieldSlots;
 
   /// The slot currently being analyzed and rewritten. The lattice and all
   /// per-slot methods operate relative to this value.
@@ -814,6 +820,7 @@ LogicalResult Promoter::promote() {
   if (region.empty())
     return success();
 
+  hoistFieldProjections();
   findPromotableSlots();
   captureAcrossWait();
 
@@ -902,6 +909,279 @@ void Promoter::promoteSlot() {
   lattice.reset();
 }
 
+/// A field projection (`llhd.sig.array_get` with a constant index or
+/// `llhd.sig.struct_extract`) together with the root signal it projects into
+/// and the path of fields leading to it.
+static bool getFieldPath(Value value, Value &root,
+                         SmallVectorImpl<std::string> &path) {
+  SmallVector<std::string> reversed;
+  while (true) {
+    if (value.getDefiningOp<SignalOp>()) {
+      root = value;
+      path.assign(reversed.rbegin(), reversed.rend());
+      return true;
+    }
+    if (auto op = value.getDefiningOp<SigArrayGetOp>()) {
+      IntegerAttr index;
+      if (!matchPattern(op.getIndex(), m_Constant(&index)))
+        return false;
+      reversed.push_back("[" + std::to_string(index.getValue().getZExtValue()) +
+                         "]");
+      value = op.getInput();
+      continue;
+    }
+    if (auto op = value.getDefiningOp<SigStructExtractOp>()) {
+      // Union members overlap each other; only struct fields are disjoint.
+      if (!hw::type_isa<hw::StructType>(op.getInput().getType().getNestedType()))
+        return false;
+      reversed.push_back("." + op.getField().str());
+      value = op.getInput();
+      continue;
+    }
+    if (auto op = value.getDefiningOp<SigExtractOp>()) {
+      IntegerAttr low;
+      if (!matchPattern(op.getLowBit(), m_Constant(&low)))
+        return false;
+      auto width = hw::getBitWidth(op.getResult().getType().getNestedType());
+      reversed.push_back("{" + std::to_string(low.getValue().getZExtValue()) +
+                         ":" + std::to_string(width) + "}");
+      value = op.getInput();
+      continue;
+    }
+    return false;
+  }
+}
+
+/// Whether two field paths of the same root may refer to overlapping bits.
+/// Paths overlap if one is a prefix of the other, or if they diverge at bit
+/// slices with intersecting ranges.
+static bool fieldPathsOverlap(ArrayRef<std::string> a, ArrayRef<std::string> b) {
+  for (unsigned i = 0, e = std::min(a.size(), b.size()); i < e; ++i) {
+    if (a[i] == b[i])
+      continue;
+    if (a[i][0] == '{' && b[i][0] == '{') {
+      unsigned alo, aw, blo, bw;
+      sscanf(a[i].c_str(), "{%u:%u}", &alo, &aw);
+      sscanf(b[i].c_str(), "{%u:%u}", &blo, &bw);
+      return alo < blo + bw && blo < alo + aw;
+    }
+    return false;
+  }
+  return true;
+}
+
+/// Make constant-index field projections of signals defined outside the region
+/// promotable slots of their own.
+///
+/// A process that only assigns `x[i]` of a module-level `x` (e.g. one
+/// `always` block per element in a generate loop) accesses the signal through
+/// `llhd.sig.array_get %x[%ci]`. Promoting the whole `x` turns every such
+/// process into a read-modify-write driver of all of `x`, and the separate
+/// element drives can no longer be combined. If all accesses to a root signal
+/// in the region go through field projections with disjoint constant paths,
+/// we hoist those projections out of the region (they are pure) and promote
+/// each of them as a slot. Bit slices (`llhd.sig.extract`) of such a field
+/// remain projections of the field slot.
+void Promoter::hoistFieldProjections() {
+  auto *regionOp = region.getParentOp();
+  auto isFieldOp = [](Operation *op) {
+    if (auto ext = dyn_cast<SigExtractOp>(op))
+      return matchPattern(ext.getLowBit(), m_Constant());
+    return isa<SigArrayGetOp, SigStructExtractOp>(op);
+  };
+  // The terminal field values: field projections (in or outside the region)
+  // that are used by a non-field op inside the region, and direct uses of a
+  // root signal.
+  DenseMap<Value, SmallVector<std::pair<Value, SmallVector<std::string>>>>
+      terminals;
+  DenseSet<Value> rejectedRoots;
+  // Only signals that the region drives through a field projection are of
+  // interest; read-only accesses are left alone.
+  DenseSet<Value> drivenRoots;
+  region.walk([&](DriveOp op) {
+    Value root;
+    SmallVector<std::string> path;
+    if (getFieldPath(op.getSignal(), root, path) && !path.empty())
+      drivenRoots.insert(root);
+  });
+  if (drivenRoots.empty())
+    return;
+
+  // Narrow whole-signal probes whose value is only used by constant field
+  // accesses (how `x[i]` reads are lowered) into probes of field projections,
+  // placed where the original probe was.
+  SmallVector<ProbeOp> probes;
+  region.walk([&](ProbeOp op) {
+    if (!drivenRoots.contains(op.getSignal()) ||
+        region.isAncestor(op.getSignal().getParentRegion()) ||
+        op.getResult().use_empty())
+      return;
+    for (auto *user : op->getUsers()) {
+      if (auto get = dyn_cast<hw::ArrayGetOp>(user);
+          get && matchPattern(get.getIndex(), m_Constant()))
+        continue;
+      if (isa<hw::StructExtractOp>(user))
+        continue;
+      if (isa<comb::ExtractOp>(user) && isa<IntegerType>(op.getType()))
+        continue;
+      return;
+    }
+    probes.push_back(op);
+  });
+  for (auto probe : probes) {
+    OpBuilder builder(probe);
+    for (auto *user : llvm::make_early_inc_range(probe->getUsers())) {
+      Value field;
+      if (auto get = dyn_cast<hw::ArrayGetOp>(user)) {
+        IntegerAttr index;
+        matchPattern(get.getIndex(), m_Constant(&index));
+        auto idx = hw::ConstantOp::create(builder, get.getLoc(), index);
+        field = SigArrayGetOp::create(builder, get.getLoc(), probe.getSignal(), idx);
+      } else if (auto ext = dyn_cast<hw::StructExtractOp>(user)) {
+        field = SigStructExtractOp::create(builder, ext.getLoc(), probe.getSignal(),
+                                           ext.getFieldNameAttr());
+      } else {
+        auto bits = cast<comb::ExtractOp>(user);
+        auto width = cast<IntegerType>(probe.getType()).getWidth();
+        auto low = hw::ConstantOp::create(
+            builder, bits.getLoc(),
+            APInt(llvm::Log2_64_Ceil(width), bits.getLowBit()));
+        field = SigExtractOp::create(
+            builder, bits.getLoc(),
+            RefType::get(bits.getType()), probe.getSignal(), low);
+      }
+      auto narrow = ProbeOp::create(builder, user->getLoc(), field);
+      user->getResult(0).replaceAllUsesWith(narrow.getResult());
+      user->erase();
+    }
+    probe.erase();
+  }
+
+  auto record = [&](Value term) {
+    Value root;
+    SmallVector<std::string> path;
+    if (!getFieldPath(term, root, path)) {
+      // Unknown access pattern: reject the root signal if we can find it.
+      for (Value v = term; auto *def = v.getDefiningOp();) {
+        if (isa<SignalOp>(def)) {
+          rejectedRoots.insert(v);
+          break;
+        }
+        if (def->getNumOperands() == 0 || !isa<RefType>(def->getOperand(0).getType()))
+          break;
+        v = def->getOperand(0);
+      }
+      return;
+    }
+    if (region.isAncestor(root.getParentRegion()))
+      return; // local signal, handled as usual
+    auto &list = terminals[root];
+    if (!llvm::any_of(list, [&](auto &e) { return e.first == term; }))
+      list.push_back({term, path});
+  };
+  region.walk([&](Operation *op) {
+    bool inRegionField = isFieldOp(op) && region.isAncestor(op->getParentRegion());
+    if (inRegionField) {
+      // Only the outermost value of a field chain counts.
+      if (!op->getResult(0).use_empty() &&
+          llvm::all_of(op->getUsers(), [&](Operation *user) {
+            return isFieldOp(user);
+          }))
+        return;
+      record(op->getResult(0));
+      return;
+    }
+    for (auto operand : op->getOperands()) {
+      if (!isa<RefType>(operand.getType()))
+        continue;
+      if (auto *def = operand.getDefiningOp();
+          def && isFieldOp(def) && region.isAncestor(def->getParentRegion()))
+        continue; // recorded as a terminal field itself
+      record(operand);
+    }
+  });
+
+  for (auto &[root, list] : terminals) {
+    if (rejectedRoots.contains(root) || !drivenRoots.contains(root))
+      continue;
+    // Equal paths are the same field: keep the first projection.
+    std::map<SmallVector<std::string>, Value> byPath;
+    SmallVector<std::pair<Value, SmallVector<std::string>>> unique;
+    SmallVector<std::pair<Value, Value>> duplicates;
+    for (auto &[term, path] : list) {
+      auto [it, inserted] = byPath.insert({path, term});
+      if (inserted)
+        unique.push_back({term, path});
+      else
+        duplicates.push_back({term, it->second});
+    }
+    list = std::move(unique);
+    // Terminals that are projections of another terminal (e.g. bit slices of
+    // an element that is also driven as a whole) stay in the region as
+    // projections of that terminal's slot.
+    {
+      DenseSet<Value> termValues;
+      for (auto &e : list)
+        termValues.insert(e.first);
+      SmallVector<std::pair<Value, SmallVector<std::string>>> outer;
+      for (auto &e : list) {
+        bool nested = false;
+        for (Value v = e.first; auto *def = v.getDefiningOp();) {
+          if (isa<SignalOp>(def) || def->getNumOperands() == 0)
+            break;
+          v = def->getOperand(0);
+          if (termValues.contains(v)) {
+            nested = true;
+            break;
+          }
+        }
+        if (!nested)
+          outer.push_back(e);
+      }
+      list = std::move(outer);
+    }
+    // All paths must be non-empty and pairwise disjoint (no path is a prefix
+    // of another one).
+    bool ok = llvm::all_of(list, [](auto &e) { return !e.second.empty(); });
+    for (unsigned i = 0; ok && i < list.size(); ++i)
+      for (unsigned j = i + 1; ok && j < list.size(); ++j)
+        if (fieldPathsOverlap(list[i].second, list[j].second))
+          ok = false;
+    if (!ok)
+      continue;
+    for (auto &[term, path] : list) {
+      // Hoist the projection chain (and constant indices) out of the region.
+      SmallVector<Operation *> chain;
+      for (Value v = term; !v.getDefiningOp<SignalOp>();
+           v = v.getDefiningOp()->getOperand(0))
+        if (v.getDefiningOp()->getParentRegion() == &region ||
+            region.isAncestor(v.getDefiningOp()->getParentRegion()))
+          chain.push_back(v.getDefiningOp());
+      for (auto *op : llvm::reverse(chain)) {
+        // Constant indices/offsets defined inside the region move along.
+        for (auto &operand : op->getOpOperands()) {
+          auto *def = operand.get().getDefiningOp();
+          if (def && region.isAncestor(def->getParentRegion()))
+            operand.set(OpBuilder(regionOp).clone(*def)->getResult(0));
+        }
+        op->moveBefore(regionOp);
+      }
+      fieldSlots.insert(term);
+      LLVM_DEBUG(llvm::dbgs() << "- Field slot " << term << "\n");
+    }
+    // Now that the first projection of each path is hoisted and dominates the
+    // region, replace duplicates of it inside the region.
+    for (auto [dup, first] : duplicates) {
+      dup.replaceUsesWithIf(first, [&](OpOperand &use) {
+        return region.isAncestor(use.getOwner()->getParentRegion());
+      });
+      if (auto *def = dup.getDefiningOp();
+          def && dup.use_empty() && region.isAncestor(def->getParentRegion()))
+        pruner.eraseLaterIfUnused(dup);
+    }
+  }
+}
+
 /// Identify any promotable slots probed or driven under the current region.
 void Promoter::findPromotableSlots() {
   SmallPtrSet<Value, 8> seenSlots;
@@ -916,7 +1196,8 @@ void Promoter::findPromotableSlots() {
       // We can only promote probes and drives on a locally-defined signal.
       // Other signals, such as the ones brought into a module through a port,
       // have an unknown aliasing relationship with the other ports.
-      if (!operand.getDefiningOp<llhd::SignalOp>())
+      if (!operand.getDefiningOp<llhd::SignalOp>() &&
+          !fieldSlots.contains(operand))
         continue;
 
       // Ensure the slot is not used in any way we cannot reason about.
