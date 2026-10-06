@@ -3427,6 +3427,23 @@ function void seeminglyExhaustiveCase(logic [1:0] a);
   endcase
 endfunction
 
+// Exhaustiveness is checked at the width of the case expression before slang
+// widens it to the common type of the items (here the 32-bit literals).
+// CHECK-LABEL: @exhaustiveCaseOnWidenedExpr
+function void exhaustiveCaseOnWidenedExpr(logic [3:0] a);
+  logic [3:0] z;
+  // CHECK: moore.zext {{%.+}} : l2 -> l32
+  case (a[1:0])
+    // CHECK-COUNT-3: cf.cond_br
+    0, 1: z = 4'b0001;
+    2: z = 4'b0010;
+    // CHECK: cf.cond_br {{%.+}}, [[CASE3:\^.+]], [[ELSE3:\^.+]]
+    3: z = 4'b1000;
+    // CHECK: [[ELSE3]]:
+    // CHECK-NEXT: cf.br [[CASE3]]
+  endcase
+endfunction
+
 // Check that ImportVerilog recognizes case statements with (* full_case *)
 // attribute, assuming the case expression uses a two-state values (0 and 1).
 // The (* full_case *) attribute informs the synthesis tool that all possible
