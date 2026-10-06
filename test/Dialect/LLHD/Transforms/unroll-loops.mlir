@@ -595,3 +595,33 @@ hw.module @UnfoldedConstantStart(out x : i42) {
   }
   hw.output %0 : i42
 }
+
+// A loop whose condition fails on entry (e.g. `for (i = 1; i < DEPTH; ++i)`
+// with DEPTH = 1, lowered to an `eq` continuation test) runs zero times.
+// CHECK-LABEL: @ZeroTripLoop
+hw.module @ZeroTripLoop(out x : i42) {
+  %c0_i32 = hw.constant 0 : i32
+  %c1_i32 = hw.constant 1 : i32
+  %c0_i42 = hw.constant 0 : i42
+  %c42_i42 = hw.constant 42 : i42
+  // CHECK: llhd.combinational
+  %0 = llhd.combinational -> i42 {
+    // CHECK-NEXT: cf.br [[BB:\^.+]](%c0_i42 : i42)
+    // CHECK-NOT: comb.icmp
+    // CHECK-NOT: comb.add
+    // CHECK: [[BB]]([[X:%.+]]: i42):
+    // CHECK-NOT: comb.add
+    // CHECK: llhd.yield [[X]]
+    cf.br ^header(%c1_i32, %c0_i42 : i32, i42)
+  ^header(%i: i32, %x: i42):
+    %1 = comb.icmp eq %i, %c0_i32 : i32
+    cf.cond_br %1, ^body, ^exit
+  ^body:
+    %2 = comb.add %x, %c42_i42 : i42
+    %ip = comb.add %i, %c1_i32 : i32
+    cf.br ^header(%ip, %2 : i32, i42)
+  ^exit:
+    llhd.yield %x : i42
+  }
+  hw.output %0 : i42
+}

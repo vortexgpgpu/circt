@@ -249,6 +249,31 @@ bool Loop::match() {
     return failMatch("unsupported increment");
   }
 
+  // A loop whose continuation condition already fails for the initial value
+  // never runs its body, e.g. `for (i = 1; i < 1; ++i)` over a depth-1
+  // pipeline. This is only valid if nothing but the exit test precedes the
+  // exit, i.e. the header is the exiting block.
+  if (exitEdge->getOwner()->getBlock() == header) {
+    bool continues = true;
+    using P = comb::ICmpPredicate;
+    switch (predicate) {
+    case P::eq: case P::ceq: case P::weq: continues = beginBound == endBound; break;
+    case P::ne: case P::cne: case P::wne: continues = beginBound != endBound; break;
+    case P::ult: continues = beginBound.ult(endBound); break;
+    case P::ule: continues = beginBound.ule(endBound); break;
+    case P::ugt: continues = beginBound.ugt(endBound); break;
+    case P::uge: continues = beginBound.uge(endBound); break;
+    case P::slt: continues = beginBound.slt(endBound); break;
+    case P::sle: continues = beginBound.sle(endBound); break;
+    case P::sgt: continues = beginBound.sgt(endBound); break;
+    case P::sge: continues = beginBound.sge(endBound); break;
+    }
+    if (!continues) {
+      tripCount = 0;
+      return true;
+    }
+  }
+
   std::optional<unsigned> range;
   // Determine the trip count and loop behavior.
   // for (unsigned i = N; i < M; i += S) with N <= M and S > 0
