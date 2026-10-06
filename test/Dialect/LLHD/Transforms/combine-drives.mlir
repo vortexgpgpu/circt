@@ -348,6 +348,24 @@ hw.module @UnionDefault(in %v: i1337) {
   llhd.drv %3, %v after %2 : i1337
 }
 
+// A drive of an entire union-typed field is used as the field's value; it is
+// not a drive of the union's first variant.
+// CHECK-LABEL: @UnionWholeDrive
+hw.module @UnionWholeDrive(in %u : !hw.union<x: i42, y: i42>, in %v : i1337) {
+  %c0_i1379 = hw.constant 0 : i1379
+  %0 = hw.bitcast %c0_i1379 : (i1379) -> !hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig
+  // CHECK-NEXT: [[TMP:%.+]] = hw.struct_create (%u, %v)
+  // CHECK-NEXT: llhd.drv %a, [[TMP]] after {{%.+}}
+  // CHECK-NOT: hw.union_create
+  %a = llhd.sig %0 : !hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>
+  %2 = llhd.sig.struct_extract %a["u"] : <!hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>>
+  %3 = llhd.sig.struct_extract %a["v"] : <!hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>>
+  llhd.drv %2, %u after %1 : !hw.union<x: i42, y: i42>
+  llhd.drv %3, %v after %1 : i1337
+}
+
 // CHECK-LABEL: @UnionConflict
 hw.module @UnionConflict(in %u : i42, in %v : i1337) {
   %c0_i1337 = hw.constant 0 : i1337

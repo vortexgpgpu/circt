@@ -556,8 +556,9 @@ void ModuleContext::aggregateDriveSlices(Signal &signal, Value driveDelay,
   // If we get here we cover the entire signal. If we already have a single
   // drive, simply mark that as this signal's single drive. Otherwise we have to
   // do some actual work.
-  if (slices.size() == 1 && slices[0].length != 0 && slices[0].op &&
-      !hw::type_isa<hw::UnionType>(type)) {
+  // A drive of a union field is a length-0 slice; a drive of the whole union
+  // has a non-zero length and, like any other whole-value drive, is used as is.
+  if (slices.size() == 1 && slices[0].length != 0 && slices[0].op) {
     signal.completeDrives.push_back(slices[0].op);
     return;
   }
@@ -603,11 +604,14 @@ void ModuleContext::aggregateDriveSlices(Signal &signal, Value driveDelay,
 
   // Handle unions.
   if (auto unionType = hw::type_dyn_cast<hw::UnionType>(type)) {
-    // Unions have a single-element slice. All we need to do is wrap that
-    // element up into the actual union type.
+    // Unions have a single slice. A field slice (length 0) is wrapped up
+    // into the union type; a whole-union slice already has that type.
     assert(slices.size() == 1);
-    result = hw::UnionCreateOp::create(builder, unionType, slices[0].offset,
-                                       slices[0].value);
+    if (slices[0].length != 0)
+      result = slices[0].value;
+    else
+      result = hw::UnionCreateOp::create(builder, unionType, slices[0].offset,
+                                         slices[0].value);
     LLVM_DEBUG(llvm::dbgs() << "  - Created " << result << "\n");
   }
 
