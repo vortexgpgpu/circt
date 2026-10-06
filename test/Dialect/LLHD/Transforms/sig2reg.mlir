@@ -191,3 +191,25 @@ hw.module @UninitializedFullDrive(in %value : i4, out out : i4) {
   // CHECK: hw.output %value : i4
   hw.output %read : i4
 }
+
+// A signal with one immediate whole-value drive is replaced by the driven
+// value; probes of projections become the matching aggregate accesses.
+// CHECK-LABEL: @SingleWholeDrive
+hw.module @SingleWholeDrive(in %v : !hw.array<2xi8>, out a : i8, out b : i4, out c : !hw.array<2xi8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %c2_i3 = hw.constant 2 : i3
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK-NOT: llhd.
+  // CHECK: [[A:%.+]] = hw.array_get %v[%false]
+  // CHECK: [[B:%.+]] = comb.extract [[A]] from 2
+  // CHECK: hw.output [[A]], [[B]], %v
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  llhd.drv %x, %v after %t : !hw.array<2xi8>
+  %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+  %a = llhd.prb %e : i8
+  %s = llhd.sig.extract %e from %c2_i3 : <i8> -> <i4>
+  %b = llhd.prb %s : i4
+  %c = llhd.prb %x : !hw.array<2xi8>
+  hw.output %a, %b, %c : i8, i4, !hw.array<2xi8>
+}

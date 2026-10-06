@@ -16,6 +16,8 @@
 #include "circt/Dialect/LLHD/LLHDPasses.h"
 #include "llvm/Support/Debug.h"
 
+#include "mlir/IR/Matchers.h"
+
 #define DEBUG_TYPE "llhd-sig2reg"
 
 namespace circt {
@@ -346,6 +348,93 @@ private:
   SmallVector<Operation *> toDelete;
 };
 
+/// Promote a signal that has exactly one unconditional, immediate drive of its
+/// whole value, and is otherwise only probed, either directly or through
+/// static projections (array elements, struct fields, bit slices). Reads are
+/// rebuilt from the driven value with the matching aggregate ops, keeping the
+/// value's structure instead of flattening the signal into one bit vector.
+static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
+  llhd::DriveOp drive;
+  SmallVector<std::pair<Operation *, SmallVector<Operation *>>> probes;
+  SmallVector<Operation *> projections;
+  SmallVector<std::pair<Value, SmallVector<Operation *>>> worklist;
+  worklist.push_back({sigOp.getResult(), {}});
+  while (!worklist.empty()) {
+    auto [value, path] = worklist.pop_back_val();
+    for (auto &use : value.getUses()) {
+      auto *user = use.getOwner();
+      if (user->getBlock() != sigOp->getBlock())
+        return failure();
+      if (auto driveOp = dyn_cast<llhd::DriveOp>(user)) {
+        if (use.getOperandNumber() != 0 || !path.empty() || drive ||
+            driveOp.getEnable())
+          return failure();
+        auto timeOp = driveOp.getTime().getDefiningOp<llhd::ConstantTimeOp>();
+        if (!timeOp)
+          return failure();
+        auto t = timeOp.getValue();
+        if (t.getTime() != 0 || t.getDelta() != 0 || t.getEpsilon() > 1)
+          return failure();
+        drive = driveOp;
+        continue;
+      }
+      if (isa<llhd::ProbeOp>(user)) {
+        probes.push_back({user, path});
+        continue;
+      }
+      bool isStatic =
+          TypeSwitch<Operation *, bool>(user)
+              .Case<llhd::SigArrayGetOp>([](auto op) {
+                return matchPattern(op.getIndex(), m_Constant());
+              })
+              .Case<llhd::SigExtractOp>([](auto op) {
+                return matchPattern(op.getLowBit(), m_Constant());
+              })
+              .Case<llhd::SigStructExtractOp>([](auto) { return true; })
+              .Default([](auto) { return false; });
+      if (!isStatic)
+        return failure();
+      projections.push_back(user);
+      auto subPath = path;
+      subPath.push_back(user);
+      worklist.push_back({user->getResult(0), subPath});
+    }
+  }
+  if (!drive)
+    return failure();
+
+  // Rebuild every probed value from the driven value.
+  for (auto &[probe, path] : probes) {
+    OpBuilder builder(probe);
+    Value value = drive.getValue();
+    for (auto *proj : path) {
+      auto loc = proj->getLoc();
+      if (auto op = dyn_cast<llhd::SigArrayGetOp>(proj)) {
+        value = builder.createOrFold<hw::ArrayGetOp>(loc, value, op.getIndex());
+      } else if (auto op = dyn_cast<llhd::SigStructExtractOp>(proj)) {
+        value = builder.createOrFold<hw::StructExtractOp>(loc, value,
+                                                          op.getFieldAttr());
+      } else {
+        auto ext = cast<llhd::SigExtractOp>(proj);
+        IntegerAttr low;
+        matchPattern(ext.getLowBit(), m_Constant(&low));
+        auto width = hw::getBitWidth(
+            cast<llhd::RefType>(ext.getResult().getType()).getNestedType());
+        value = builder.createOrFold<comb::ExtractOp>(
+            loc, builder.getIntegerType(width), value,
+            low.getValue().getZExtValue());
+      }
+    }
+    probe->getResult(0).replaceAllUsesWith(value);
+    probe->erase();
+  }
+  drive.erase();
+  for (auto *op : llvm::reverse(projections))
+    op->erase();
+  sigOp.erase();
+  return success();
+}
+
 struct Sig2RegPass : public circt::llhd::impl::Sig2RegBase<Sig2RegPass> {
   void runOnOperation() override;
 };
@@ -375,6 +464,10 @@ void Sig2RegPass::runOnOperation() {
 
     LLVM_DEBUG(llvm::dbgs() << "  - Attempting to promote signal "
                             << sigOp.getName() << "\n");
+    if (succeeded(promoteSingleWholeDrive(sigOp))) {
+      LLVM_DEBUG(llvm::dbgs() << "  - Promoted single whole-value drive\n\n");
+      continue;
+    }
     SigPromoter promoter(sigOp);
     if (failed(promoter.computeIntervals()) || !promoter.isPromotable())
       continue;
