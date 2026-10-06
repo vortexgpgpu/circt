@@ -275,6 +275,9 @@ LogicalResult ImportDriver::prepareDriver(SourceMgr &sourceMgr) {
       .compilationFlags[slang::ast::CompilationFlags::AllowUseBeforeDeclare] =
       options.allowUseBeforeDeclare;
   driver.options
+      .compilationFlags[slang::ast::CompilationFlags::AllowHierarchicalConst] =
+      options.allowHierarchicalConst;
+  driver.options
       .compilationFlags[slang::ast::CompilationFlags::IgnoreUnknownModules] =
       options.ignoreUnknownModules;
   driver.options.compilationFlags[slang::ast::CompilationFlags::LintMode] =

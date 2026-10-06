@@ -109,6 +109,10 @@ struct ImportVerilogOptions {
   /// If true, allow various to be referenced before they are declared.
   std::optional<bool> allowUseBeforeDeclare;
 
+  /// If true, allow hierarchical references in constant expressions, such as
+  /// `$bits` of a member of an interface port.
+  std::optional<bool> allowHierarchicalConst;
+
   /// If true, ignore errors about unknown modules.
   std::optional<bool> ignoreUnknownModules;
 

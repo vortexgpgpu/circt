@@ -239,6 +239,12 @@ struct CLOptions {
           "Don't issue an error for use of names before their declarations."),
       cl::init(false), cl::cat(cat)};
 
+  cl::opt<bool> allowHierarchicalConst{
+      "allow-hierarchical-const",
+      cl::desc("Allow hierarchical references in constant expressions, such "
+               "as $bits of an interface port member."),
+      cl::init(false), cl::cat(cat)};
+
   cl::opt<bool> ignoreUnknownModules{
       "ignore-unknown-modules",
       cl::desc("Don't issue an error for instantiations of unknown modules, "
@@ -378,6 +384,7 @@ static LogicalResult executeWithSources(MLIRContext *context,
   if (opts.timeScale.getNumOccurrences() > 0)
     options.timeScale = opts.timeScale;
   options.allowUseBeforeDeclare = opts.allowUseBeforeDeclare;
+  options.allowHierarchicalConst = opts.allowHierarchicalConst;
   options.ignoreUnknownModules = opts.ignoreUnknownModules;
   if (opts.loweringMode != LoweringMode::OnlyLint)
     options.topModules = opts.topModules;
