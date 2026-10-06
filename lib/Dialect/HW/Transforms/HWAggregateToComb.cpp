@@ -34,6 +34,22 @@ struct HWArrayCreateLikeOpConversion : OpConversionPattern<OpTy> {
   LogicalResult
   matchAndRewrite(OpTy op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // comb.concat only takes integers. An element type the converter could
+    // not lower to one must fail legalization, not reach the builder.
+    uint64_t width = 0;
+    for (auto input : adaptor.getInputs()) {
+      auto intType = dyn_cast<IntegerType>(input.getType());
+      if (!intType)
+        return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+          diag << "element of type " << input.getType()
+               << " was not lowered to an integer";
+        });
+      width += intType.getWidth();
+    }
+    if (width > IntegerType::kMaxWidth)
+      return op.emitError("aggregate of ")
+             << width << " bits exceeds the " << IntegerType::kMaxWidth
+             << "-bit integer limit";
     rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, adaptor.getInputs());
     return success();
   }
