@@ -117,9 +117,11 @@ def RemoveControlFlowPass : Pass<"llhd-remove-control-flow", "hw::HWModuleOp"> {
 def UnrollLoopsPass : Pass<"llhd-unroll-loops", "hw::HWModuleOp"> {
   let summary = "Unroll control flow loops with static bounds";
   let description = [{
-    Unroll loops in `llhd.combinational` operations by replicating the loop body
-    and replacing induction variables with constants. The loop bounds must be
-    known at compile time.
+    Unroll loops in `llhd.combinational` and `llhd.process` operations by
+    replicating the loop body and replacing induction variables with constants.
+    The loop bounds must be known at compile time. Loops in processes, such as
+    a reset loop over the elements of an array register in a clocked process,
+    must be unrolled before `llhd-deseq` can detect the register.
   }];
 }
 

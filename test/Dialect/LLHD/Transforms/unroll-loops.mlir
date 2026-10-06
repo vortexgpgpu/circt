@@ -625,3 +625,35 @@ hw.module @ZeroTripLoop(out x : i42) {
   }
   hw.output %0 : i42
 }
+
+// Counted loops inside processes are unrolled too, e.g. a reset loop over the
+// elements of an array register in a clocked process. The process loop around
+// the wait is left alone.
+// CHECK-LABEL: @LoopInProcess
+hw.module @LoopInProcess(in %clk : i1) {
+  %c0_i32 = hw.constant 0 : i32
+  %c1_i32 = hw.constant 1 : i32
+  %c2_i32 = hw.constant 2 : i32
+  %init = hw.aggregate_constant [1 : i8, 1 : i8] : !hw.array<2xi8>
+  %c0_i8 = hw.constant 0 : i8
+  // CHECK: llhd.process
+  %0 = llhd.process -> !hw.array<2xi8> {
+    cf.br ^wait(%init : !hw.array<2xi8>)
+  ^wait(%a: !hw.array<2xi8>):
+    // CHECK: llhd.wait
+    llhd.wait yield (%a : !hw.array<2xi8>), (%clk : i1), ^start
+  ^start:
+    cf.br ^header(%c0_i32, %a : i32, !hw.array<2xi8>)
+  ^header(%i: i32, %x: !hw.array<2xi8>):
+    // CHECK-NOT: comb.icmp slt
+    %1 = comb.icmp slt %i, %c2_i32 : i32
+    cf.cond_br %1, ^body, ^wait(%x : !hw.array<2xi8>)
+  ^body:
+    // CHECK: [[X1:%.+]] = hw.array_inject
+    // CHECK: hw.array_inject [[X1]]
+    %idx = comb.extract %i from 0 : (i32) -> i1
+    %2 = hw.array_inject %x[%idx], %c0_i8 : !hw.array<2xi8>, i1
+    %ip = comb.add %i, %c1_i32 : i32
+    cf.br ^header(%ip, %2 : i32, !hw.array<2xi8>)
+  }
+}

@@ -470,17 +470,21 @@ namespace {
 struct UnrollLoopsPass
     : public llhd::impl::UnrollLoopsPassBase<UnrollLoopsPass> {
   void runOnOperation() override;
-  void runOnOperation(CombinationalOp op);
-  bool unrollLoops(CombinationalOp op);
+  void runOnOperation(Operation *op);
+  bool unrollLoops(Operation *op);
 };
 } // namespace
 
 void UnrollLoopsPass::runOnOperation() {
-  for (auto op : getOperation().getOps<CombinationalOp>())
-    runOnOperation(op);
+  // Unroll loops in combinational regions, and also in processes: clocked
+  // processes with loops (e.g. resetting every element of an array register)
+  // must be loop-free before Deseq can turn them into registers.
+  for (auto &op : *getOperation().getBodyBlock())
+    if (isa<CombinationalOp, ProcessOp>(op))
+      runOnOperation(&op);
 }
 
-void UnrollLoopsPass::runOnOperation(CombinationalOp op) {
+void UnrollLoopsPass::runOnOperation(Operation *op) {
   // Unrolling a loop may open up opportunities to unroll its nested loops.
   // Iterate until all possible loops are unrolled or the limit is reached.
   for (unsigned i = 0; i < 16; ++i)
@@ -488,16 +492,17 @@ void UnrollLoopsPass::runOnOperation(CombinationalOp op) {
       break;
 }
 
-bool UnrollLoopsPass::unrollLoops(CombinationalOp op) {
+bool UnrollLoopsPass::unrollLoops(Operation *op) {
   // There's nothing to do if we only have a single block. MLIR even refuses to
   // compute a dominator tree in that case.
-  if (op.getBody().hasOneBlock())
+  auto &body = op->getRegion(0);
+  if (body.empty() || body.hasOneBlock())
     return false;
 
   // Find the loops.
-  LLVM_DEBUG(llvm::dbgs() << "Unrolling loops in " << op.getLoc() << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Unrolling loops in " << op->getLoc() << "\n");
   DominanceInfo domInfo(op);
-  CFGLoopInfo cfgLoopInfo(domInfo.getDomTree(&op.getBody()));
+  CFGLoopInfo cfgLoopInfo(domInfo.getDomTree(&body));
 
   // We only support simple loops where there is a single back-edge to the
   // header, and the latch block has a back-edge to a single header. Create a
