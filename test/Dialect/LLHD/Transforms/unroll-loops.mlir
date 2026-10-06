@@ -563,3 +563,35 @@ hw.module @NestedLoopWithNonConstantInnerBound(in %a: i42, out x : i42) {
   }
   hw.output %0 : i42
 }
+
+// Inner loops of an unrolled outer loop start at `i + 1` or end at `N - i`,
+// which are unfolded `comb.add`/`comb.sub` of constants until canonicalization
+// runs.
+// CHECK-LABEL: @UnfoldedConstantStart
+hw.module @UnfoldedConstantStart(out x : i42) {
+  %c0_i42 = hw.constant 0 : i42
+  %c1_i42 = hw.constant 1 : i42
+  %c3_i42 = hw.constant 3 : i42
+  %c42_i42 = hw.constant 42 : i42
+  // CHECK: llhd.combinational
+  %0 = llhd.combinational -> i42 {
+    // CHECK-NOT: comb.icmp
+    // CHECK: [[X1:%.+]] = comb.add {{%.+}}, %c42_i42
+    // CHECK-NEXT: [[X2:%.+]] = comb.add [[X1]], %c42_i42
+    // CHECK-NOT: comb.add {{.*}}%c42_i42
+    // CHECK: llhd.yield [[X2]]
+    %start = comb.add %c0_i42, %c1_i42 : i42
+    %end = comb.sub %c3_i42, %c0_i42 : i42
+    cf.br ^header(%start, %c0_i42 : i42, i42)
+  ^header(%i: i42, %x: i42):
+    %1 = comb.icmp slt %i, %end : i42
+    cf.cond_br %1, ^body, ^exit
+  ^body:
+    %2 = comb.add %x, %c42_i42 : i42
+    %ip = comb.add %i, %c1_i42 : i42
+    cf.br ^header(%ip, %2 : i42, i42)
+  ^exit:
+    llhd.yield %x : i42
+  }
+  hw.output %0 : i42
+}
