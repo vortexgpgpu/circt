@@ -1614,3 +1614,34 @@ hw.module @NoFieldSlotForUnionMembers(in %v : i8, in %w : i4) {
     llhd.wait (%v, %w : i8, i4), ^bb1
   }
 }
+
+// Nested projections in a different block than the projection they refine are
+// rematerialized in that block, so the root signal (here a union whose members
+// overlap) can still be promoted.
+// CHECK-LABEL: @LocalizeNestedProjections
+hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %init = hw.constant 0 : i3
+  %z = hw.bitcast %init : (i3) -> !hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>
+  // CHECK: %u = llhd.sig
+  // CHECK-NEXT: llhd.process
+  // CHECK-NOT: llhd.sig.struct_extract
+  // CHECK: llhd.drv %u
+  %u = llhd.sig %z : !hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %a = llhd.sig.struct_extract %u["a"] : <!hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>>
+    cf.cond_br %c, ^bb2, ^bb3
+  ^bb2:
+    %x = llhd.sig.struct_extract %a["x"] : <!hw.struct<x: i2, y: i1>>
+    llhd.drv %x, %v after %t : i2
+    cf.br ^bb4
+  ^bb3:
+    %y = llhd.sig.struct_extract %a["y"] : <!hw.struct<x: i2, y: i1>>
+    llhd.drv %y, %w after %t : i1
+    cf.br ^bb4
+  ^bb4:
+    llhd.wait (%c, %v, %w : i1, i2, i1), ^bb1
+  }
+}

@@ -729,6 +729,7 @@ struct Promoter {
   LogicalResult promote();
 
   void hoistFieldProjections();
+  void localizeNestedProjections();
   void findPromotableSlots();
   Value resolveSlot(Value projectionOrSlot);
   void populateSlotOps();
@@ -821,6 +822,7 @@ LogicalResult Promoter::promote() {
     return success();
 
   hoistFieldProjections();
+  localizeNestedProjections();
   findPromotableSlots();
   captureAcrossWait();
 
@@ -1179,6 +1181,38 @@ void Promoter::hoistFieldProjections() {
           def && dup.use_empty() && region.isAncestor(def->getParentRegion()))
         pruner.eraseLaterIfUnused(dup);
     }
+  }
+}
+
+/// Clone projection ops into the blocks of their nested projection users.
+///
+/// A projection such as `llhd.sig.struct_extract %u["alu"]` is often created
+/// once and then projected into further (`["xtype"]`, `["is_w"]`) in later
+/// blocks of a process (e.g. the per-opcode assignments to a union field in
+/// Vortex VX_decode). Promotion requires nested projections to live in the
+/// same block as the projection they refine, so rematerialize the pure
+/// projection chain right before each nested user in another block.
+void Promoter::localizeNestedProjections() {
+  auto isProjection = [](Operation *op) {
+    return isa<SigArrayGetOp, SigExtractOp, SigStructExtractOp>(op);
+  };
+  SmallVector<Operation *> worklist;
+  region.walk([&](Operation *op) {
+    if (isProjection(op) && op->getParentRegion() == &region)
+      worklist.push_back(op);
+  });
+  while (!worklist.empty()) {
+    auto *proj = worklist.pop_back_val();
+    for (auto &use : llvm::make_early_inc_range(proj->getResult(0).getUses())) {
+      auto *user = use.getOwner();
+      if (!isProjection(user) || user->getBlock() == proj->getBlock() ||
+          user->getParentRegion() != &region)
+        continue;
+      auto *clone = OpBuilder(user).clone(*proj);
+      use.set(clone->getResult(0));
+      worklist.push_back(clone);
+    }
+    pruner.eraseLaterIfUnused(proj);
   }
 }
 
