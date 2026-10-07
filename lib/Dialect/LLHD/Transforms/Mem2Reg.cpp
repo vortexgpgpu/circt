@@ -1120,11 +1120,17 @@ void Promoter::hoistFieldProjections() {
     list = std::move(unique);
     // Terminals that are projections of another terminal (e.g. bit slices of
     // an element that is also driven as a whole) stay in the region as
-    // projections of that terminal's slot.
+    // projections of that terminal's slot. The slices may project from a
+    // separate projection op of the same field (one `llhd.sig.array_get` per
+    // block): that op then becomes a duplicate of the terminal.
     {
       DenseSet<Value> termValues;
       for (auto &e : list)
         termValues.insert(e.first);
+      auto isStrictPrefix = [](ArrayRef<std::string> a,
+                               ArrayRef<std::string> b) {
+        return a.size() < b.size() && a == b.take_front(a.size());
+      };
       SmallVector<std::pair<Value, SmallVector<std::string>>> outer;
       for (auto &e : list) {
         bool nested = false;
@@ -1134,6 +1140,28 @@ void Promoter::hoistFieldProjections() {
           v = def->getOperand(0);
           if (termValues.contains(v)) {
             nested = true;
+            break;
+          }
+        }
+        if (!nested) {
+          // Find the outermost terminal whose path is a strict prefix.
+          for (auto &t : list) {
+            if (!isStrictPrefix(t.second, e.second))
+              continue;
+            bool tNested = llvm::any_of(list, [&](auto &u) {
+              return isStrictPrefix(u.second, t.second);
+            });
+            if (tNested)
+              continue;
+            // The chain value of `e` at the terminal's field.
+            Value v = e.first;
+            for (size_t n = e.second.size(); n > t.second.size(); --n)
+              v = v.getDefiningOp()->getOperand(0);
+            auto *def = v.getDefiningOp();
+            if (v != t.first && def && region.isAncestor(def->getParentRegion())) {
+              duplicates.push_back({v, t.first});
+              nested = true;
+            }
             break;
           }
         }

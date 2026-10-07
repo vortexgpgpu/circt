@@ -1574,6 +1574,45 @@ hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
   }
 }
 
+// An element driven as a whole in one block and through bit slices of a
+// separate projection of the same element in another (Vortex VX_serial_mul's
+// `p[i] <= 0` / `p[i][3:0] <= ...`) is still one field slot: the second
+// projection is a duplicate of the first, and the slices stay projections of
+// the slot.
+// CHECK-LABEL: @FieldSlotSlicesOfDuplicateProjection
+hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : i4) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %c0_i8 = hw.constant 0 : i8
+  %c0_i3 = hw.constant 0 : i3
+  %c4_i3 = hw.constant 4 : i3
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK: %x = llhd.sig
+  // CHECK-NEXT: [[E0:%.+]] = llhd.sig.array_get %x[%false]
+  // CHECK-NEXT: llhd.process
+  // CHECK-NOT: llhd.drv %x,
+  // CHECK: llhd.drv [[E0]],
+  %x = llhd.sig %init : !hw.array<2xi8>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    cf.cond_br %c, ^bb2, ^bb3
+  ^bb2:
+    %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+    llhd.drv %e, %c0_i8 after %t : i8
+    cf.br ^bb4
+  ^bb3:
+    %f = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+    %lo = llhd.sig.extract %f from %c0_i3 : <i8> -> <i4>
+    llhd.drv %lo, %v after %t : i4
+    %hi = llhd.sig.extract %f from %c4_i3 : <i8> -> <i4>
+    llhd.drv %hi, %w after %t : i4
+    cf.br ^bb4
+  ^bb4:
+    llhd.wait (%c, %v, %w : i1, i4, i4), ^bb1
+  }
+}
+
 // Field slots are not formed if the region also accesses an overlapping part
 // of the signal; the whole signal is promoted as before.
 // CHECK-LABEL: @NoFieldSlotOnOverlap
