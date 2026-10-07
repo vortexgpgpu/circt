@@ -2206,3 +2206,16 @@ hw.module @shruOvershiftKnownBits(in %s: i4, out ne_zero: i1, out eq_zero: i1) {
   %2 = comb.icmp eq %0, %c0_i4 : i4
   hw.output %1, %2 : i1, i1
 }
+
+// A mux between injects of the same array at the same index sinks into the
+// injected element.
+// CHECK-LABEL: hw.module @MuxOfSameIndexInjects
+hw.module @MuxOfSameIndexInjects(in %c : i1, in %x : !hw.array<4xi8>, in %i : i2, in %a : i8, in %b : i8, out out : !hw.array<4xi8>) {
+  // CHECK-NEXT: [[MUX:%.+]] = comb.mux %c, %a, %b : i8
+  // CHECK-NEXT: [[INJ:%.+]] = hw.array_inject %x[%i], [[MUX]]
+  // CHECK-NEXT: hw.output [[INJ]]
+  %0 = hw.array_inject %x[%i], %a : !hw.array<4xi8>, i2
+  %1 = hw.array_inject %x[%i], %b : !hw.array<4xi8>, i2
+  %2 = comb.mux %c, %0, %1 : !hw.array<4xi8>
+  hw.output %2 : !hw.array<4xi8>
+}

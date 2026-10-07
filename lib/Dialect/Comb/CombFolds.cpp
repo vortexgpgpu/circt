@@ -2504,6 +2504,30 @@ static bool foldMuxOfUniformArrays(MuxOp op, PatternRewriter &rewriter) {
   return true;
 }
 
+// If both arguments of the mux inject into the same array at the same index,
+// sink the mux into the injected element:
+//   mux(c, inject(x, i, a), inject(x, i, b)) -> inject(x, i, mux(c, a, b))
+// A `case` on a select inside a per-element `always_comb` loop produces one
+// such mux per element; sinking them leaves a plain inject chain that the
+// array canonicalizers can turn into an `hw.array_create`.
+static bool foldMuxOfSameIndexInjects(MuxOp op, PatternRewriter &rewriter) {
+  auto trueInj = op.getTrueValue().getDefiningOp<hw::ArrayInjectOp>();
+  auto falseInj = op.getFalseValue().getDefiningOp<hw::ArrayInjectOp>();
+  if (!trueInj || !falseInj || trueInj == falseInj)
+    return false;
+  if (trueInj.getInput() != falseInj.getInput() ||
+      trueInj.getIndex() != falseInj.getIndex())
+    return false;
+  if (!trueInj->hasOneUse() || !falseInj->hasOneUse())
+    return false;
+  auto mux = MuxOp::create(rewriter, op.getLoc(), op.getCond(),
+                           trueInj.getElement(), falseInj.getElement(),
+                           op.getTwoState());
+  rewriter.replaceOpWithNewOp<hw::ArrayInjectOp>(op, trueInj.getInput(),
+                                                 trueInj.getIndex(), mux);
+  return true;
+}
+
 /// If the mux condition is an operand to the op defining its true or false
 /// value, replace the condition with 1 or 0.
 static bool assumeMuxCondInOperand(Value muxCond, Value muxValue,
@@ -2799,6 +2823,9 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
 
   // mux(cond, repl(n, a1), repl(n, a2)) -> repl(n, mux(cond, a1, a2))
   if (foldMuxOfUniformArrays(op, rewriter))
+    return success();
+
+  if (foldMuxOfSameIndexInjects(op, rewriter))
     return success();
 
   // mux(cond, opA(cond), opB(cond)) -> mux(cond, opA(1), opB(0))
