@@ -176,7 +176,15 @@ LogicalResult Converter::analyzeFanIn() {
         finished.contains(definingOp))
       continue;
     if (!seen.insert(definingOp).second) {
-      definingOp->emitError("combinational loop detected");
+      auto diag = definingOp->emitError("combinational loop detected");
+      // The DFS stack from the repeated op to the top is the loop.
+      unsigned first = 0;
+      for (unsigned i = 0, e = worklist.size(); i < e; ++i)
+        if (std::get<0>(worklist[i]) == definingOp)
+          first = i;
+      for (unsigned i = first, e = worklist.size(); i < e; ++i)
+        diag.attachNote(std::get<0>(worklist[i])->getLoc())
+            << "loop passes through " << std::get<0>(worklist[i])->getName();
       return failure();
     }
     addToWorklist(definingOp);
