@@ -382,12 +382,27 @@ void DriveHoister::findHoistableSlots() {
       return;
 
     // We can only hoist drives to slots declared by a `llhd.sig` op outside the
-    // current region, or to constant field projections of such a signal
-    // (created by Mem2Reg for processes that only assign one element of an
-    // aggregate), provided the process accesses no overlapping part of it.
+    // current region, to constant field projections of such a signal (created
+    // by Mem2Reg for processes that only assign one element of an aggregate),
+    // provided the process accesses no overlapping part of it, or to a
+    // reference port of the module.
     if (!slot.getParentRegion()->isProperAncestor(&getBody()))
       return;
-    if (!slot.getDefiningOp<llhd::SignalOp>()) {
+    auto portArg = dyn_cast<BlockArgument>(slot);
+    if (portArg && isa<hw::HWModuleOp>(portArg.getOwner()->getParentOp())) {
+      // Another reference port may be bound to the same signal; a signal
+      // declared in the module, or a projection of one, cannot be.
+      bool mayAlias = false;
+      processOp->walk([&](Operation *user) {
+        if (!isa<ProbeOp, DriveOp>(user) || user->getOperand(0) == slot)
+          return;
+        Value otherRoot;
+        SmallVector<std::string> otherPath;
+        mayAlias |= !getFieldPath(user->getOperand(0), otherRoot, otherPath);
+      });
+      if (mayAlias)
+        return;
+    } else if (!slot.getDefiningOp<llhd::SignalOp>()) {
       Value root;
       SmallVector<std::string> path;
       if (!getFieldPath(slot, root, path))

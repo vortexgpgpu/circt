@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypes.h"
 #include "circt/Dialect/LLHD/LLHDOps.h"
 #include "circt/Dialect/LLHD/LLHDPasses.h"
@@ -17,8 +18,8 @@
 #include "mlir/IR/Dominance.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Debug.h"
-#include <map>
 #include "llvm/Support/GenericIteratedDominanceFrontier.h"
+#include <map>
 
 #define DEBUG_TYPE "llhd-mem2reg"
 
@@ -934,7 +935,8 @@ static bool getFieldPath(Value value, Value &root,
     }
     if (auto op = value.getDefiningOp<SigStructExtractOp>()) {
       // Union members overlap each other; only struct fields are disjoint.
-      if (!hw::type_isa<hw::StructType>(op.getInput().getType().getNestedType()))
+      if (!hw::type_isa<hw::StructType>(
+              op.getInput().getType().getNestedType()))
         return false;
       reversed.push_back("." + op.getField().str());
       value = op.getInput();
@@ -957,7 +959,8 @@ static bool getFieldPath(Value value, Value &root,
 /// Whether two field paths of the same root may refer to overlapping bits.
 /// Paths overlap if one is a prefix of the other, or if they diverge at bit
 /// slices with intersecting ranges.
-static bool fieldPathsOverlap(ArrayRef<std::string> a, ArrayRef<std::string> b) {
+static bool fieldPathsOverlap(ArrayRef<std::string> a,
+                              ArrayRef<std::string> b) {
   for (unsigned i = 0, e = std::min(a.size(), b.size()); i < e; ++i) {
     if (a[i] == b[i])
       continue;
@@ -1038,19 +1041,20 @@ void Promoter::hoistFieldProjections() {
         IntegerAttr index;
         matchPattern(get.getIndex(), m_Constant(&index));
         auto idx = hw::ConstantOp::create(builder, get.getLoc(), index);
-        field = SigArrayGetOp::create(builder, get.getLoc(), probe.getSignal(), idx);
+        field = SigArrayGetOp::create(builder, get.getLoc(), probe.getSignal(),
+                                      idx);
       } else if (auto ext = dyn_cast<hw::StructExtractOp>(user)) {
-        field = SigStructExtractOp::create(builder, ext.getLoc(), probe.getSignal(),
-                                           ext.getFieldNameAttr());
+        field = SigStructExtractOp::create(
+            builder, ext.getLoc(), probe.getSignal(), ext.getFieldNameAttr());
       } else {
         auto bits = cast<comb::ExtractOp>(user);
         auto width = cast<IntegerType>(probe.getType()).getWidth();
         auto low = hw::ConstantOp::create(
             builder, bits.getLoc(),
             APInt(llvm::Log2_64_Ceil(width), bits.getLowBit()));
-        field = SigExtractOp::create(
-            builder, bits.getLoc(),
-            RefType::get(bits.getType()), probe.getSignal(), low);
+        field = SigExtractOp::create(builder, bits.getLoc(),
+                                     RefType::get(bits.getType()),
+                                     probe.getSignal(), low);
       }
       auto narrow = ProbeOp::create(builder, user->getLoc(), field);
       user->getResult(0).replaceAllUsesWith(narrow.getResult());
@@ -1069,7 +1073,8 @@ void Promoter::hoistFieldProjections() {
           rejectedRoots.insert(v);
           break;
         }
-        if (def->getNumOperands() == 0 || !isa<RefType>(def->getOperand(0).getType()))
+        if (def->getNumOperands() == 0 ||
+            !isa<RefType>(def->getOperand(0).getType()))
           break;
         v = def->getOperand(0);
       }
@@ -1082,13 +1087,13 @@ void Promoter::hoistFieldProjections() {
       list.push_back({term, path});
   };
   region.walk([&](Operation *op) {
-    bool inRegionField = isFieldOp(op) && region.isAncestor(op->getParentRegion());
+    bool inRegionField =
+        isFieldOp(op) && region.isAncestor(op->getParentRegion());
     if (inRegionField) {
       // Only the outermost value of a field chain counts.
       if (!op->getResult(0).use_empty() &&
-          llvm::all_of(op->getUsers(), [&](Operation *user) {
-            return isFieldOp(user);
-          }))
+          llvm::all_of(op->getUsers(),
+                       [&](Operation *user) { return isFieldOp(user); }))
         return;
       record(op->getResult(0));
       return;
@@ -1158,7 +1163,8 @@ void Promoter::hoistFieldProjections() {
             for (size_t n = e.second.size(); n > t.second.size(); --n)
               v = v.getDefiningOp()->getOperand(0);
             auto *def = v.getDefiningOp();
-            if (v != t.first && def && region.isAncestor(def->getParentRegion())) {
+            if (v != t.first && def &&
+                region.isAncestor(def->getParentRegion())) {
               duplicates.push_back({v, t.first});
               nested = true;
             }
@@ -1245,10 +1251,49 @@ void Promoter::localizeNestedProjections() {
 }
 
 /// Identify any promotable slots probed or driven under the current region.
+/// The signal a reference ultimately refers to, looking through projections.
+static Value getReferenceRoot(Value ref) {
+  while (auto *op = ref.getDefiningOp()) {
+    if (!isa<SigArrayGetOp, SigExtractOp, SigStructExtractOp, SigArraySliceOp>(
+            op))
+      break;
+    ref = op->getOperand(0);
+  }
+  return ref;
+}
+
+/// The single reference port of the enclosing module the region accesses, if
+/// every reference it accesses is either that port or rooted at a signal
+/// declared in the module. Another port, or a reference of unknown origin,
+/// may be bound to the same signal, so no port is promotable then.
+static Value getUnaliasedPort(Region &region) {
+  Value port;
+  bool unknown = false;
+  region.walk([&](Operation *op) {
+    for (auto operand : op->getOperands()) {
+      if (!isa<RefType>(operand.getType()))
+        continue;
+      auto root = getReferenceRoot(operand);
+      if (root.getDefiningOp<SignalOp>())
+        continue;
+      auto arg = dyn_cast<BlockArgument>(root);
+      if (!arg || !isa<hw::HWModuleOp>(arg.getOwner()->getParentOp()) ||
+          (port && port != root)) {
+        unknown = true;
+        return WalkResult::interrupt();
+      }
+      port = root;
+    }
+    return WalkResult::advance();
+  });
+  return unknown ? Value{} : port;
+}
+
 void Promoter::findPromotableSlots() {
   SmallPtrSet<Value, 8> seenSlots;
   SmallPtrSet<Operation *, 8> checkedUsers;
   SmallVector<Operation *, 8> userWorklist;
+  auto unaliasedPort = getUnaliasedPort(region);
 
   region.walk([&](Operation *op) {
     for (auto operand : op->getOperands()) {
@@ -1257,9 +1302,11 @@ void Promoter::findPromotableSlots() {
 
       // We can only promote probes and drives on a locally-defined signal.
       // Other signals, such as the ones brought into a module through a port,
-      // have an unknown aliasing relationship with the other ports.
+      // have an unknown aliasing relationship with the other ports; a port is
+      // promotable only if the region accesses no other port.
       if (!operand.getDefiningOp<llhd::SignalOp>() &&
-          !fieldSlots.contains(operand))
+          !fieldSlots.contains(operand) &&
+          !(unaliasedPort && operand == unaliasedPort))
         continue;
 
       // Ensure the slot is not used in any way we cannot reason about.
@@ -1796,7 +1843,7 @@ void Promoter::propagateForward(LatticeNode *node, bool optimisticMerges,
     // Do not propagate reaching defs past a block whose defining op does not
     // dominate this entry, or whose predecessor set contains any suspending
     // block.
-    Block *slotBlock = currentSlot.getDefiningOp()->getBlock();
+    Block *slotBlock = currentSlot.getParentBlock();
     bool slotDominates = dominance.dominates(slotBlock, entry->block);
     bool anyPredSuspends =
         llvm::any_of(entry->predecessors, [](auto *p) { return p->suspends; });

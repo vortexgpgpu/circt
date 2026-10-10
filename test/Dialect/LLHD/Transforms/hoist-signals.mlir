@@ -202,13 +202,14 @@ hw.module @DontHoistDrivesOfSlotsWithUnsavoryUsers(in %c: !llhd.ref<i42>) {
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
+  // Drives to a reference port of the module are hoisted too.
   // CHECK: llhd.process
   llhd.process {
-    // CHECK-NEXT: llhd.drv %c
-    llhd.drv %c, %c0_i42 after %0 : i42
     // CHECK-NEXT: llhd.halt
+    llhd.drv %c, %c0_i42 after %0 : i42
     llhd.halt
   }
+  // CHECK: llhd.drv %c
 }
 
 // CHECK-LABEL: @OnlyHoistLastDrive
@@ -458,4 +459,38 @@ hw.module @HoistCombinationalFieldDrives(in %c : i1, in %a : i8, in %b : i8, out
   }
   %o = llhd.prb %x : !hw.array<2xi8>
   hw.output %o : !hw.array<2xi8>
+}
+
+// Drives to a reference port of the module are hoisted as long as the process
+// accesses no other port, which might be bound to the same signal.
+// CHECK-LABEL: @HoistPortDrive
+hw.module @HoistPortDrive(in %c : i1, in %a : i8, in %b : i8, in %p : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: [[V:%.+]] = llhd.combinational -> i8 {
+  // CHECK-NOT: llhd.drv
+  // CHECK: llhd.drv %p, [[V]]
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2
+  ^bb1:
+    llhd.drv %p, %a after %t : i8
+    llhd.yield
+  ^bb2:
+    llhd.drv %p, %b after %t : i8
+    llhd.yield
+  }
+}
+
+// Two ports driven in one process may be bound to the same signal; their
+// drives stay ordered inside the process.
+// CHECK-LABEL: @PortDrivesMayAlias
+hw.module @PortDrivesMayAlias(in %a : i8, in %b : i8, in %p : !llhd.ref<i8>, in %q : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.combinational {
+  // CHECK-NEXT: llhd.drv %p
+  // CHECK-NEXT: llhd.drv %q
+  llhd.combinational {
+    llhd.drv %p, %a after %t : i8
+    llhd.drv %q, %b after %t : i8
+    llhd.yield
+  }
 }

@@ -1687,3 +1687,49 @@ hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
     llhd.wait (%c, %v, %w : i1, i2, i1), ^bb1
   }
 }
+
+// A reference port of the module is promoted like a signal declared outside the
+// process if the process accesses no other port: if/else drives become one
+// drive of the merged value.
+// CHECK-LABEL: @PortIfElse
+hw.module @PortIfElse(in %c : i1, in %a : i8, in %b : i8, in %p : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.combinational {
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2
+  ^bb1:
+    // CHECK-NOT: llhd.drv
+    // CHECK: cf.br ^bb3(%a : i8)
+    llhd.drv %p, %a after %t : i8
+    cf.br ^bb3
+  ^bb2:
+    // CHECK-NOT: llhd.drv
+    // CHECK: cf.br ^bb3(%b : i8)
+    llhd.drv %p, %b after %t : i8
+    cf.br ^bb3
+  ^bb3:
+    // CHECK: ^bb3([[V:%.+]]: i8):
+    // CHECK: llhd.drv %p, [[V]]
+    // CHECK-NEXT: llhd.yield
+    llhd.yield
+  }
+}
+
+// Two ports may be bound to the same signal; neither is promoted.
+// CHECK-LABEL: @PortsMayAlias
+hw.module @PortsMayAlias(in %c : i1, in %a : i8, in %p : !llhd.ref<i8>, in %q : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2
+  ^bb1:
+    // CHECK: llhd.drv %p, %a
+    llhd.drv %p, %a after %t : i8
+    cf.br ^bb3
+  ^bb2:
+    // CHECK: llhd.drv %q, %a
+    llhd.drv %q, %a after %t : i8
+    cf.br ^bb3
+  ^bb3:
+    llhd.yield
+  }
+}
