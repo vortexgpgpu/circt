@@ -482,6 +482,17 @@ hw.module private @init2DVector(in %clock: !seq.clock, in %a: !hw.array<1xarray<
   // CHECK: hw.output %0 : !hw.array<1xarray<1xi1>>
 }
 
+// The variants of a packed union overlap: all of its bits are randomized.
+// COMMON-LABEL: hw.module private @initUnion
+hw.module private @initUnion(in %clock: !seq.clock) {
+  %r = seq.firreg %r clock %clock sym @__r__ : !hw.union<a: i3, b: i3>
+  // CHECK:       sv.ifdef.procedural @RANDOMIZE_REG_INIT {
+  // CHECK:         %[[EXTRACT:.*]] = comb.extract %{{.*}} from 0 : (i32) -> i3
+  // CHECK-NEXT:    %[[CAST:.*]] = hw.bitcast %[[EXTRACT]] : (i3) -> !hw.union<a: i3, b: i3>
+  // CHECK-NEXT:    sv.bpassign %r, %[[CAST]] : !hw.union<a: i3, b: i3>
+  hw.output
+}
+
 // COMMON-LABEL: hw.module private @initStruct
 hw.module private @initStruct(in %clock: !seq.clock) {
   %r = seq.firreg %r clock %clock sym @__r__ : !hw.struct<a: i1>
