@@ -13,6 +13,8 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "llhd-hoist-signals"
@@ -803,6 +805,63 @@ struct HoistSignalsPass
 };
 } // namespace
 
+//===----------------------------------------------------------------------===//
+// Probes of Reference Block Arguments
+//===----------------------------------------------------------------------===//
+
+/// A reference that reaches a block as a block argument (a `case` selecting
+/// which signal to read, say) and is only probed there, before anything with
+/// a side effect in that block, reads the same value as probing it in each
+/// predecessor just before the branch: no time passes in between. Pass the
+/// probed value instead, so the probes act on the signals themselves and the
+/// usual probe hoisting applies to them.
+static void forwardProbedBlockArguments(Region &region) {
+  for (auto &block : region) {
+    for (auto arg : llvm::reverse(block.getArguments())) {
+      auto refType = dyn_cast<RefType>(arg.getType());
+      if (!refType || arg.use_empty())
+        continue;
+      bool probesOnly = llvm::all_of(arg.getUsers(), [&](Operation *user) {
+        if (!isa<ProbeOp>(user) || user->getBlock() != &block)
+          return false;
+        for (auto &op : block) {
+          if (&op == user)
+            return true;
+          if (!isMemoryEffectFree(&op))
+            return false;
+        }
+        return false;
+      });
+      bool branchesOnly =
+          llvm::all_of(block.getPredecessors(), [](Block *pred) {
+            return isa<BranchOpInterface>(pred->getTerminator());
+          });
+      if (!probesOnly || !branchesOnly)
+        continue;
+
+      for (auto it = block.pred_begin(), end = block.pred_end(); it != end;
+           ++it) {
+        auto *terminator = (*it)->getTerminator();
+        auto succOperands = cast<BranchOpInterface>(terminator)
+                                .getSuccessorOperands(it.getSuccessorIndex());
+        auto index =
+            arg.getArgNumber() - succOperands.getProducedOperandCount();
+        OpBuilder builder(terminator);
+        auto value =
+            ProbeOp::create(builder, terminator->getLoc(), succOperands[index]);
+        succOperands.getMutableForwardedOperands().slice(index, 1).assign(
+            value);
+      }
+      arg.setType(refType.getNestedType());
+      for (auto *user : llvm::make_early_inc_range(arg.getUsers())) {
+        auto probe = cast<ProbeOp>(user);
+        probe.replaceAllUsesWith(arg);
+        probe.erase();
+      }
+    }
+  }
+}
+
 void HoistSignalsPass::runOnOperation() {
   SmallVector<Region *> regions;
   getOperation()->walk([&](Operation *op) {
@@ -812,6 +871,7 @@ void HoistSignalsPass::runOnOperation() {
           regions.push_back(&region);
   });
   for (auto *region : regions) {
+    forwardProbedBlockArguments(*region);
     ProbeHoister(*region).hoist();
     if (isa<ProcessOp, CombinationalOp>(region->getParentOp()))
       DriveHoister(region->getParentOp()).hoist();

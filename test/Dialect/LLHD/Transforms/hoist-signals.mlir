@@ -494,3 +494,22 @@ hw.module @PortDrivesMayAlias(in %a : i8, in %b : i8, in %p : !llhd.ref<i8>, in 
     llhd.yield
   }
 }
+
+// A reference selected by control flow and only probed in the merge block is
+// probed in each predecessor instead, and the probes then leave the process.
+// CHECK-LABEL: @ProbeSelectedReference
+hw.module @ProbeSelectedReference(in %c : i1, in %p : !llhd.ref<i8>, in %q : !llhd.ref<i8>, out o : i8) {
+  // CHECK-DAG: [[P:%.+]] = llhd.prb %p : i8
+  // CHECK-DAG: [[Q:%.+]] = llhd.prb %q : i8
+  // CHECK: llhd.combinational -> i8 {
+  // CHECK-NEXT: cf.cond_br %c, ^bb1([[P]] : i8), ^bb1([[Q]] : i8)
+  // CHECK-NEXT: ^bb1([[V:%.+]]: i8):
+  // CHECK-NEXT: llhd.yield [[V]] : i8
+  %0 = llhd.combinational -> i8 {
+    cf.cond_br %c, ^bb1(%p : !llhd.ref<i8>), ^bb1(%q : !llhd.ref<i8>)
+  ^bb1(%r: !llhd.ref<i8>):
+    %v = llhd.prb %r : i8
+    llhd.yield %v : i8
+  }
+  hw.output %0 : i8
+}
