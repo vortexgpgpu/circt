@@ -41,14 +41,22 @@ hw.module @Top(in %v : i8, out r : i8) {
   hw.output %r : i8
 }
 
-// Ports that are both probed and driven are left alone.
-// CHECK-LABEL: hw.module private @ReadWrite
-// CHECK-SAME: in %a : !llhd.ref<i8>
+// A port probed and driven once becomes an input for the probed value and an
+// output for the driven one. The instance probes the signal into the input and
+// drives it from the output, with the drive's delay.
+// CHECK-LABEL: hw.module private @ReadWrite(in %a_in : i8, out a : i8)
+// CHECK-NEXT: hw.output %a_in : i8
 hw.module private @ReadWrite(in %a : !llhd.ref<i8>) {
   %t = llhd.constant_time <0ns, 0d, 1e>
   %0 = llhd.prb %a : i8
   llhd.drv %a, %0 after %t : i8
 }
+// CHECK-LABEL: hw.module @UseReadWrite
+// CHECK: %x = llhd.sig
+// CHECK: [[P:%.+]] = llhd.prb %x : i8
+// CHECK: [[A:%.+]] = hw.instance "rw" @ReadWrite(a_in: [[P]]: i8) -> (a: i8)
+// CHECK: [[T:%.+]] = llhd.constant_time <0ns, 0d, 1e>
+// CHECK: llhd.drv %x, [[A]] after [[T]] : i8
 hw.module @UseReadWrite() {
   %c0 = hw.constant 0 : i8
   %x = llhd.sig %c0 : <i8>

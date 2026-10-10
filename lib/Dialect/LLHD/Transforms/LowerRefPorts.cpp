@@ -9,9 +9,11 @@
 // Interface ports without a modport, and other `inout`-like connections, are
 // imported as `!llhd.ref<T>` module ports. A module that only probes such a
 // port reads a value and a module that only drives it once produces a value,
-// so the reference can be replaced by an input or output port. The probe or
-// drive moves to the instantiation site, where the signal is local and can be
-// promoted by Sig2Reg.
+// so the reference can be replaced by an input or output port. A module that
+// drives it once and also probes it (reading back an interface signal it
+// drives) gets both: an output for the driven value and an input for the
+// probed one. The probe or drive moves to the instantiation site, where the
+// signal is local and can be promoted by Sig2Reg.
 //
 //===----------------------------------------------------------------------===//
 
@@ -80,8 +82,11 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
       return;
 
   auto *body = module.getBodyBlock();
-  SmallVector<unsigned> readPorts;                     // input ids
+  SmallVector<unsigned> readPorts;                      // input ids
   SmallVector<std::pair<unsigned, DriveOp>> writePorts; // input id, drive
+  // Ports both probed and driven once keep their input (for the probed value)
+  // and also get an output (for the driven one).
+  llvm::SmallDenseSet<unsigned> readWritePorts;
   for (unsigned i = 0, e = module.getNumInputPorts(); i < e; ++i) {
     auto arg = body->getArgument(i);
     if (!isa<RefType>(arg.getType()))
@@ -89,10 +94,15 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
     auto use = classify(arg);
     if (use.other)
       continue;
-    if (use.drives.empty() && !use.probes.empty())
+    if (use.drives.empty() && !use.probes.empty()) {
       readPorts.push_back(i);
-    else if (use.drives.size() == 1 && use.probes.empty())
+    } else if (use.drives.size() == 1) {
       writePorts.push_back({i, use.drives[0]});
+      if (!use.probes.empty()) {
+        readPorts.push_back(i);
+        readWritePorts.insert(i);
+      }
+    }
   }
   if (readPorts.empty() && writePorts.empty())
     return;
@@ -101,19 +111,31 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
                           << writePorts.size() << " write ref ports of "
                           << module.getModuleName() << "\n");
 
+  // The names of the outputs created for driven ports, taken before an input
+  // that stays for the probed value is renamed.
+  SmallDenseMap<unsigned, StringAttr> writeNames;
+  for (auto [i, drive] : writePorts)
+    writeNames[i] = module.getInputNameAttr(i);
+
   // Read-only ports: retype to the nested value type, probes become the value.
+  // An input that also had a drive keeps the probed value under a new name.
   auto type = module.getHWModuleType();
   SmallVector<hw::ModulePort> ports(type.getPorts());
   for (auto i : readPorts) {
     auto arg = body->getArgument(i);
     auto valueType = cast<RefType>(arg.getType()).getNestedType();
     for (auto *user : llvm::make_early_inc_range(arg.getUsers())) {
-      auto probe = cast<ProbeOp>(user);
+      auto probe = dyn_cast<ProbeOp>(user);
+      if (!probe)
+        continue; // the drive of a read-write port, lowered below
       probe.replaceAllUsesWith(arg);
       probe.erase();
     }
     arg.setType(valueType);
-    ports[type.getPortIdForInputId(i)].type = valueType;
+    auto &port = ports[type.getPortIdForInputId(i)];
+    port.type = valueType;
+    if (readWritePorts.contains(i))
+      port.name = StringAttr::get(&getContext(), port.name.getValue() + "_in");
   }
   module.setHWModuleType(hw::ModuleType::get(&getContext(), ports));
 
@@ -126,11 +148,12 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
     unsigned numOutputs = module.getNumOutputPorts();
     for (auto [i, drive] : writePorts) {
       hw::PortInfo info;
-      info.name = module.getInputNameAttr(i);
+      info.name = writeNames.lookup(i);
       info.type = drive.getValue().getType();
       info.dir = hw::ModulePort::Direction::Output;
       insertOutputs.push_back({numOutputs, info});
-      eraseInputs.push_back(i);
+      if (!readWritePorts.contains(i))
+        eraseInputs.push_back(i);
       newOutputs.push_back(drive.getValue());
       auto timeOp = drive.getTime().getDefiningOp<ConstantTimeOp>();
       writeDelays.push_back(timeOp.getValueAttr());
@@ -154,8 +177,8 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
     auto inst = use->getInstance<hw::InstanceOp>();
     OpBuilder builder(inst);
     for (auto i : readPorts)
-      inst.setOperand(i, ProbeOp::create(builder, inst.getLoc(),
-                                         inst.getOperand(i)));
+      inst.setOperand(
+          i, ProbeOp::create(builder, inst.getLoc(), inst.getOperand(i)));
     if (writePorts.empty())
       continue;
     SmallVector<Value> operands;
@@ -163,9 +186,14 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
     unsigned w = 0;
     for (unsigned i = 0, e = inst.getNumOperands(); i < e; ++i) {
       if (w < writePorts.size() && writePorts[w].first == i) {
-        refs.push_back(inst.getOperand(i));
         ++w;
-        continue;
+        if (!readWritePorts.contains(i)) {
+          refs.push_back(inst.getOperand(i));
+          continue;
+        }
+        // The operand is already the probe created above; drive the probed
+        // signal from the new output.
+        refs.push_back(inst.getOperand(i).getDefiningOp<ProbeOp>().getSignal());
       }
       operands.push_back(inst.getOperand(i));
     }
@@ -179,7 +207,8 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
       inst.getResult(r).replaceAllUsesWith(newInst.getResult(r));
     builder.setInsertionPointAfter(newInst);
     for (unsigned k = 0; k < refs.size(); ++k) {
-      auto time = ConstantTimeOp::create(builder, inst.getLoc(), writeDelays[k]);
+      auto time =
+          ConstantTimeOp::create(builder, inst.getLoc(), writeDelays[k]);
       DriveOp::create(builder, inst.getLoc(), refs[k],
                       newInst.getResult(oldResults + k), time, Value());
     }
@@ -195,8 +224,8 @@ void LowerRefPortsPass::runOnOperation() {
   // its own reference port into a probe or drive at the instance.
   SmallVector<hw::HWModuleOp> order;
   for (auto *node : llvm::post_order(&graph))
-    if (auto module = dyn_cast_or_null<hw::HWModuleOp>(
-            node->getModule().getOperation()))
+    if (auto module =
+            dyn_cast_or_null<hw::HWModuleOp>(node->getModule().getOperation()))
       order.push_back(module);
   for (auto module : order)
     processModule(module, graph);
