@@ -393,8 +393,9 @@ void DriveHoister::findHoistableSlots() {
         Value otherRoot;
         SmallVector<std::string> otherPath;
         if (!getFieldPath(user->getOperand(0), otherRoot, otherPath)) {
-          // Unknown reference: conservatively assume it may alias.
-          overlaps |= !isa<SignalOp>(user->getOperand(0).getDefiningOp()) ||
+          // Unknown reference (including a reference block argument, which
+          // has no defining op): conservatively assume it may alias.
+          overlaps |= !user->getOperand(0).getDefiningOp<SignalOp>() ||
                       user->getOperand(0) == root;
           return;
         }

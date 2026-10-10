@@ -395,3 +395,25 @@ hw.module @HoistFieldDrive(in %v : i8) {
   }
   // CHECK: llhd.drv [[E]], [[P]]
 }
+
+// A process that also accesses a reference block argument (which has no
+// defining op) may alias the projected field; its drive stays in place.
+// CHECK-LABEL: @FieldDriveWithRefArgument
+hw.module @FieldDriveWithRefArgument(in %v : i8, in %r : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  // CHECK: [[E:%.+]] = llhd.sig.array_get
+  %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+  // CHECK: llhd.process {
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %a = llhd.prb %r : i8
+    %n = comb.add %v, %a : i8
+    // CHECK: llhd.drv [[E]], {{%.+}} after
+    llhd.drv %e, %n after %t : i8
+    llhd.wait (%v : i8), ^bb1
+  }
+}
