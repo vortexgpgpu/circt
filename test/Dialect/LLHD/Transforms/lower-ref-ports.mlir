@@ -33,8 +33,8 @@ hw.module private @Mid(in %a : !llhd.ref<i8>, in %b : !llhd.ref<i8>) {
 hw.module @Top(in %v : i8, out r : i8) {
   %t = llhd.constant_time <0ns, 0d, 1e>
   %c0 = hw.constant 0 : i8
-  %x = llhd.sig %c0 : i8
-  %y = llhd.sig %c0 : i8
+  %x = llhd.sig %c0 : <i8>
+  %y = llhd.sig %c0 : <i8>
   llhd.drv %x, %v after %t : i8
   hw.instance "mid" @Mid(a: %x: !llhd.ref<i8>, b: %y: !llhd.ref<i8>) -> ()
   %r = llhd.prb %y : i8
@@ -51,6 +51,6 @@ hw.module private @ReadWrite(in %a : !llhd.ref<i8>) {
 }
 hw.module @UseReadWrite() {
   %c0 = hw.constant 0 : i8
-  %x = llhd.sig %c0 : i8
+  %x = llhd.sig %c0 : <i8>
   hw.instance "rw" @ReadWrite(a: %x: !llhd.ref<i8>) -> ()
 }

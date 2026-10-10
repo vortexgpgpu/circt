@@ -1534,6 +1534,9 @@ hw.module @InitializedDelayedPartialDrive(in %u: !hw.array<4xi42>, in %v: i42, i
     func.call @use_array_i42(%value) : (!hw.array<4xi42>) -> ()
     // CHECK-NEXT: llhd.halt
     llhd.halt
+  }
+}
+
 // A process that only assigns one element of a module-level signal (as one
 // `always` block per element in a generate loop does) promotes that element as
 // a slot of its own. Reads of the element through a whole-signal probe are
@@ -1592,7 +1595,7 @@ hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : 
   // CHECK-NEXT: llhd.process
   // CHECK-NOT: llhd.drv %x,
   // CHECK: llhd.drv [[E0]],
-  %x = llhd.sig %init : !hw.array<2xi8>
+  %x = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
     cf.br ^bb1
   ^bb1:
@@ -1666,7 +1669,7 @@ hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
   // CHECK-NEXT: llhd.process
   // CHECK-NOT: llhd.sig.struct_extract
   // CHECK: llhd.drv %u
-  %u = llhd.sig %z : !hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>
+  %u = llhd.sig %z : <!hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>>
   llhd.process {
     cf.br ^bb1
   ^bb1:

@@ -308,7 +308,7 @@ hw.module @FillNestedGaps(in %u: i1, in %v: i8) {
   // CHECK: llhd.drv %a, {{%.+}} after
   // CHECK-NOT: llhd.drv
   // CHECK: hw.array_get [[INIT]]
-  %a = llhd.sig %0 : !hw.array<2xi8>
+  %a = llhd.sig %0 : <!hw.array<2xi8>>
   %2 = llhd.sig.array_get %a[%c1_i1] : <!hw.array<2xi8>>
   llhd.drv %2, %v after %1 : i8
   %3 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
@@ -329,7 +329,7 @@ hw.module @SkipNestedGapsOnParentDrive(in %u: i1, in %w: !hw.array<2xi8>, in %en
   // CHECK: %a = llhd.sig
   // CHECK: llhd.drv %a, %w after {{%.+}} if %en
   // CHECK: llhd.drv {{%.+}}, %u after
-  %a = llhd.sig %0 : !hw.array<2xi8>
+  %a = llhd.sig %0 : <!hw.array<2xi8>>
   llhd.drv %a, %w after %1 if %en : !hw.array<2xi8>
   %3 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
   %4 = llhd.sig.extract %3 from %c0_i3 : <i8> -> <i1>
@@ -401,7 +401,7 @@ hw.module @UnionWholeDrive(in %u : !hw.union<x: i42, y: i42>, in %v : i1337) {
   // CHECK-NEXT: [[TMP:%.+]] = hw.struct_create (%u, %v)
   // CHECK-NEXT: llhd.drv %a, [[TMP]] after {{%.+}}
   // CHECK-NOT: hw.union_create
-  %a = llhd.sig %0 : !hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>
+  %a = llhd.sig %0 : <!hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>>
   %2 = llhd.sig.struct_extract %a["u"] : <!hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>>
   %3 = llhd.sig.struct_extract %a["v"] : <!hw.struct<u: !hw.union<x: i42, y: i42>, v: i1337>>
   llhd.drv %2, %u after %1 : !hw.union<x: i42, y: i42>

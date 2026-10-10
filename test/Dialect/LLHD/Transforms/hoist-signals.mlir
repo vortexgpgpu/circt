@@ -380,7 +380,7 @@ hw.module @HoistFieldDrive(in %v : i8) {
   %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
-  %x = llhd.sig %init : !hw.array<2xi8>
+  %x = llhd.sig %init : <!hw.array<2xi8>>
   // CHECK: [[E:%.+]] = llhd.sig.array_get %x[%false]
   %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
   // CHECK: [[P:%.+]] = llhd.process -> i8
