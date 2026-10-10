@@ -396,8 +396,9 @@ hw.module @HoistFieldDrive(in %v : i8) {
   // CHECK: llhd.drv [[E]], [[P]]
 }
 
-// A process that also accesses a reference block argument (which has no
-// defining op) may alias the projected field; its drive stays in place.
+// A process that also accesses a reference port of the module (a block
+// argument, with no defining op): the port refers to storage outside of the
+// module and cannot alias the module's own signal, so the drive is hoisted.
 // CHECK-LABEL: @FieldDriveWithRefArgument
 hw.module @FieldDriveWithRefArgument(in %v : i8, in %r : !llhd.ref<i8>) {
   %t = llhd.constant_time <0ns, 0d, 1e>
@@ -406,14 +407,55 @@ hw.module @FieldDriveWithRefArgument(in %v : i8, in %r : !llhd.ref<i8>) {
   %x = llhd.sig %init : <!hw.array<2xi8>>
   // CHECK: [[E:%.+]] = llhd.sig.array_get
   %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
-  // CHECK: llhd.process {
+  // CHECK: [[P:%.+]] = llhd.process -> i8 {
+  // CHECK-NOT: llhd.drv
+  // CHECK: llhd.wait yield
   llhd.process {
     cf.br ^bb1
   ^bb1:
     %a = llhd.prb %r : i8
     %n = comb.add %v, %a : i8
-    // CHECK: llhd.drv [[E]], {{%.+}} after
     llhd.drv %e, %n after %t : i8
     llhd.wait (%v : i8), ^bb1
   }
+  // CHECK: llhd.drv [[E]], [[P]] after
+}
+
+// Drives at the end of a combinational process (one `always_comb` per element
+// of an array, as a generate loop produces) are hoisted like those before a
+// process's wait: the value becomes a result of the combinational process and
+// the drive moves out of it.
+// CHECK-LABEL: @HoistCombinationalFieldDrives
+hw.module @HoistCombinationalFieldDrives(in %c : i1, in %a : i8, in %b : i8, out o : !hw.array<2xi8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %true = hw.constant true
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  // CHECK: [[E0:%.+]] = llhd.sig.array_get %x[%false]
+  %e0 = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+  // CHECK: [[V0:%.+]] = llhd.combinational -> i8 {
+  // CHECK-NOT: llhd.drv
+  // CHECK: llhd.yield {{%.+}} : i8
+  // CHECK: llhd.drv [[E0]], [[V0]]
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2(%b : i8)
+  ^bb1:
+    %s = comb.add %a, %b : i8
+    cf.br ^bb2(%s : i8)
+  ^bb2(%v: i8):
+    llhd.drv %e0, %v after %t : i8
+    llhd.yield
+  }
+  // CHECK: [[E1:%.+]] = llhd.sig.array_get %x[%true]
+  %e1 = llhd.sig.array_get %x[%true] : <!hw.array<2xi8>>
+  // CHECK: [[V1:%.+]] = llhd.combinational -> i8 {
+  // CHECK: llhd.drv [[E1]], [[V1]]
+  llhd.combinational {
+    %n = comb.xor %a, %b : i8
+    llhd.drv %e1, %n after %t : i8
+    llhd.yield
+  }
+  %o = llhd.prb %x : !hw.array<2xi8>
+  hw.output %o : !hw.array<2xi8>
 }

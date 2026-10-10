@@ -275,9 +275,11 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// The struct performing the hoisting of drives in a process.
+/// The struct performing the hoisting of drives in a process, or in a
+/// combinational process whose `llhd.yield` takes the role of the suspending
+/// `llhd.wait` and `llhd.halt` terminators.
 struct DriveHoister {
-  DriveHoister(ProcessOp processOp) : processOp(processOp) {}
+  DriveHoister(Operation *processOp) : processOp(processOp) {}
   void hoist();
 
   void findHoistableSlots();
@@ -285,8 +287,10 @@ struct DriveHoister {
   void finalizeDriveSets();
   void hoistDrives();
 
-  /// The process we are hoisting drives out of.
-  ProcessOp processOp;
+  /// The `llhd.process` or `llhd.combinational` we are hoisting drives out of.
+  Operation *processOp;
+
+  Region &getBody() { return processOp->getRegion(0); }
 
   /// The slots for which we are trying to hoist drives. Mostly `llhd.sig` ops
   /// in practice. This establishes a deterministic order for slots, such that
@@ -327,7 +331,8 @@ static bool getFieldPath(Value value, Value &root,
     }
     if (auto op = value.getDefiningOp<SigStructExtractOp>()) {
       // Union members overlap each other; only struct fields are disjoint.
-      if (!hw::type_isa<hw::StructType>(op.getInput().getType().getNestedType()))
+      if (!hw::type_isa<hw::StructType>(
+              op.getInput().getType().getNestedType()))
         return false;
       reversed.push_back("." + op.getField().str());
       value = op.getInput();
@@ -350,7 +355,8 @@ static bool getFieldPath(Value value, Value &root,
 /// Whether two field paths of the same root may refer to overlapping bits.
 /// Paths overlap if one is a prefix of the other, or if they diverge at bit
 /// slices with intersecting ranges.
-static bool fieldPathsOverlap(ArrayRef<std::string> a, ArrayRef<std::string> b) {
+static bool fieldPathsOverlap(ArrayRef<std::string> a,
+                              ArrayRef<std::string> b) {
   for (unsigned i = 0, e = std::min(a.size(), b.size()); i < e; ++i) {
     if (a[i] == b[i])
       continue;
@@ -370,7 +376,7 @@ static bool fieldPathsOverlap(ArrayRef<std::string> a, ArrayRef<std::string> b) 
 /// cannot reason about.
 void DriveHoister::findHoistableSlots() {
   SmallPtrSet<Value, 8> seenSlots;
-  processOp.walk([&](DriveOp op) {
+  processOp->walk([&](DriveOp op) {
     auto slot = op.getSignal();
     if (!seenSlots.insert(slot).second)
       return;
@@ -379,7 +385,7 @@ void DriveHoister::findHoistableSlots() {
     // current region, or to constant field projections of such a signal
     // (created by Mem2Reg for processes that only assign one element of an
     // aggregate), provided the process accesses no overlapping part of it.
-    if (!slot.getParentRegion()->isProperAncestor(&processOp.getBody()))
+    if (!slot.getParentRegion()->isProperAncestor(&getBody()))
       return;
     if (!slot.getDefiningOp<llhd::SignalOp>()) {
       Value root;
@@ -387,14 +393,18 @@ void DriveHoister::findHoistableSlots() {
       if (!getFieldPath(slot, root, path))
         return;
       bool overlaps = false;
-      processOp.walk([&](Operation *user) {
+      processOp->walk([&](Operation *user) {
         if (!isa<ProbeOp, DriveOp>(user) || user->getOperand(0) == slot)
           return;
         Value otherRoot;
         SmallVector<std::string> otherPath;
         if (!getFieldPath(user->getOperand(0), otherRoot, otherPath)) {
-          // Unknown reference (including a reference block argument, which
-          // has no defining op): conservatively assume it may alias.
+          // A reference port of the module refers to storage outside of it,
+          // so it cannot alias a signal declared in the module.
+          if (auto arg = dyn_cast<BlockArgument>(user->getOperand(0)))
+            if (isa<hw::HWModuleOp>(arg.getOwner()->getParentOp()))
+              return;
+          // Any other unknown reference may alias.
           overlaps |= !user->getOperand(0).getDefiningOp<SignalOp>() ||
                       user->getOperand(0) == root;
           return;
@@ -410,7 +420,7 @@ void DriveHoister::findHoistableSlots() {
     // Ensure the slot is not used in any way we cannot reason about.
     if (!llvm::all_of(slot.getUsers(), [&](auto *user) {
           // Ignore uses outside of the region.
-          if (!processOp.getBody().isAncestor(user->getParentRegion()))
+          if (!getBody().isAncestor(user->getParentRegion()))
             return true;
           return isa<ProbeOp, DriveOp>(user);
         }))
@@ -439,11 +449,11 @@ void DriveHoister::collectDriveSets() {
   SmallPtrSet<Value, 8> unhoistableSlots;
   SmallDenseMap<Value, DriveOp, 8> laterDrives;
 
-  auto trueAttr = BoolAttr::get(processOp.getContext(), true);
-  for (auto &block : processOp.getBody()) {
-    // We can only hoist drives before wait or halt terminators.
+  auto trueAttr = BoolAttr::get(processOp->getContext(), true);
+  for (auto &block : getBody()) {
+    // We can only hoist drives before wait, halt, or yield terminators.
     auto *terminator = block.getTerminator();
-    if (!isa<WaitOp, HaltOp>(terminator))
+    if (!isa<WaitOp, HaltOp, YieldOp>(terminator))
       continue;
     suspendOps.push_back(terminator);
 
@@ -531,7 +541,7 @@ void DriveHoister::collectDriveSets() {
 /// determine which values are uniform and available outside the process, such
 /// that we don't create unnecessary process results.
 void DriveHoister::finalizeDriveSets() {
-  auto falseAttr = BoolAttr::get(processOp.getContext(), false);
+  auto falseAttr = BoolAttr::get(processOp->getContext(), false);
   for (auto &[slot, driveSet] : driveSets) {
     // Insert drives with enable set to false for any terminators that are
     // missing. This ensures that the drive set contains information for every
@@ -539,7 +549,7 @@ void DriveHoister::finalizeDriveSets() {
     for (auto *suspendOp : suspendOps) {
       auto operands = DriveOperands{
           DriveValue::dontCare(cast<RefType>(slot.getType()).getNestedType()),
-          DriveValue::dontCare(TimeType::get(processOp.getContext())),
+          DriveValue::dontCare(TimeType::get(processOp->getContext())),
           DriveValue(falseAttr),
       };
       driveSet.operands.insert({suspendOp, operands});
@@ -628,13 +638,13 @@ void DriveHoister::hoistDrives() {
         .Case<IntegerAttr>([&](auto attr) {
           auto &slot = materializedConstants[attr];
           if (!slot)
-            slot = hw::ConstantOp::create(builder, processOp.getLoc(), attr);
+            slot = hw::ConstantOp::create(builder, processOp->getLoc(), attr);
           return slot;
         })
         .Case<TimeAttr>([&](auto attr) {
           auto &slot = materializedConstants[attr];
           if (!slot)
-            slot = ConstantTimeOp::create(builder, processOp.getLoc(), attr);
+            slot = ConstantTimeOp::create(builder, processOp->getLoc(), attr);
           return slot;
         })
         .Case<Type>([&](auto type) -> Value {
@@ -643,7 +653,7 @@ void DriveHoister::hoistDrives() {
             auto attr = TimeAttr::get(builder.getContext(), 0, "ns", 0, 0);
             auto &slot = materializedConstants[attr];
             if (!slot)
-              slot = ConstantTimeOp::create(builder, processOp.getLoc(), attr);
+              slot = ConstantTimeOp::create(builder, processOp->getLoc(), attr);
             return slot;
           }
           if (auto floatTy = dyn_cast<FloatType>(type)) {
@@ -651,16 +661,16 @@ void DriveHoister::hoistDrives() {
             auto &slot = materializedConstants[attr];
             if (!slot)
               slot =
-                  arith::ConstantOp::create(builder, processOp.getLoc(), attr);
+                  arith::ConstantOp::create(builder, processOp->getLoc(), attr);
             return slot;
           }
           auto numBits = hw::getBitWidth(type);
           assert(numBits >= 0);
           Value value = hw::ConstantOp::create(
-              builder, processOp.getLoc(), builder.getIntegerType(numBits), 0);
+              builder, processOp->getLoc(), builder.getIntegerType(numBits), 0);
           if (value.getType() != type)
-            value =
-                hw::BitcastOp::create(builder, processOp.getLoc(), type, value);
+            value = hw::BitcastOp::create(builder, processOp->getLoc(), type,
+                                          value);
           return value;
         });
   };
@@ -672,7 +682,7 @@ void DriveHoister::hoistDrives() {
                << "- Adding yield operands to " << *suspendOp << "\n");
     MutableOperandRange yieldOperands =
         TypeSwitch<Operation *, MutableOperandRange>(suspendOp)
-            .Case<WaitOp, HaltOp>(
+            .Case<WaitOp, HaltOp, YieldOp>(
                 [](auto op) { return op.getYieldOperandsMutable(); });
 
     auto addYieldOperand = [&](DriveValue uniform, DriveValue nonUniform) {
@@ -703,13 +713,20 @@ void DriveHoister::hoistDrives() {
     addResultType(driveSet.uniform.delay, operands.delay);
     addResultType(driveSet.uniform.enable, operands.enable);
   }
-  auto newProcessOp =
-      ProcessOp::create(builder, processOp.getLoc(), resultTypes,
-                        processOp->getOperands(), processOp->getAttrs());
-  newProcessOp.getBody().takeBody(processOp.getBody());
-  processOp.replaceAllUsesWith(
+  Operation *newProcessOp;
+  if (isa<ProcessOp>(processOp))
+    newProcessOp =
+        ProcessOp::create(builder, processOp->getLoc(), resultTypes,
+                          processOp->getOperands(), processOp->getAttrs());
+  else {
+    newProcessOp =
+        CombinationalOp::create(builder, processOp->getLoc(), resultTypes);
+    newProcessOp->setAttrs(processOp->getAttrs());
+  }
+  newProcessOp->getRegion(0).takeBody(getBody());
+  processOp->replaceAllUsesWith(
       newProcessOp->getResults().slice(0, oldNumResults));
-  processOp.erase();
+  processOp->erase();
   processOp = newProcessOp;
 
   // Hoist the actual drive operations. We either materialize uniform values
@@ -718,9 +735,9 @@ void DriveHoister::hoistDrives() {
   builder.setInsertionPointAfter(processOp);
   auto newResultIdx = oldNumResults;
 
-  auto useResultValue = [&](DriveValue uniform) {
+  auto useResultValue = [&](DriveValue uniform) -> Value {
     if (!uniform)
-      return processOp.getResult(newResultIdx++);
+      return processOp->getResult(newResultIdx++);
     return materialize(uniform);
   };
 
@@ -781,7 +798,7 @@ void HoistSignalsPass::runOnOperation() {
   });
   for (auto *region : regions) {
     ProbeHoister(*region).hoist();
-    if (auto processOp = dyn_cast<ProcessOp>(region->getParentOp()))
-      DriveHoister(processOp).hoist();
+    if (isa<ProcessOp, CombinationalOp>(region->getParentOp()))
+      DriveHoister(region->getParentOp()).hoist();
   }
 }
