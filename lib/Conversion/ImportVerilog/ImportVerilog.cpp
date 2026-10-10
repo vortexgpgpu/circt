@@ -580,12 +580,28 @@ void circt::populateLlhdToCorePipeline(
   signalPM.addPass(mlir::createCSEPass());
   signalPM.addPass(mlir::createCanonicalizerPass());
 
+  // Combinational processes that probed a signal could not shed their control
+  // flow above; with the signals now values, they can.
+  signalPM.addPass(llhd::createRemoveControlFlowPass());
+  signalPM.addPass(mlir::createCSEPass());
+  signalPM.addPass(mlir::createCanonicalizerPass());
+  signalPM.addPass(createMapArithToCombPass(true));
+
+  // Reference ports whose drives sat in those processes could not be lowered
+  // the first time; once more lowers them and the signals they leave behind.
+  pm.addPass(llhd::createLowerRefPortsPass());
+  auto &finalSignalPM = pm.nest<hw::HWModuleOp>();
+  finalSignalPM.addPass(llhd::createCombineDrivesPass());
+  finalSignalPM.addPass(llhd::createSig2Reg());
+  finalSignalPM.addPass(mlir::createCSEPass());
+  finalSignalPM.addPass(mlir::createCanonicalizerPass());
+
   // Map `seq.firreg` with array type and `hw.array_inject` self-feedback to
   // `seq.firmem` ops.
   if (options.detectMemories) {
-    signalPM.addPass(seq::createRegOfVecToMem());
-    signalPM.addPass(mlir::createCSEPass());
-    signalPM.addPass(mlir::createCanonicalizerPass());
+    finalSignalPM.addPass(seq::createRegOfVecToMem());
+    finalSignalPM.addPass(mlir::createCSEPass());
+    finalSignalPM.addPass(mlir::createCanonicalizerPass());
   }
 
   if (options.inferClockPorts) {
