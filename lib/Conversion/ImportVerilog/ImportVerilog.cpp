@@ -531,22 +531,15 @@ void circt::populateMooreToCorePipeline(OpPassManager &pm) {
   }
 }
 
-/// Convert LLHD dialect IR into core dialect IR
-void circt::populateLlhdToCorePipeline(
-    OpPassManager &pm, const LlhdToCorePipelineOptions &options) {
-  // Inline function calls and lower SCF to CF.
-  pm.addNestedPass<hw::HWModuleOp>(llhd::createWrapProceduralOpsPass());
-  pm.addPass(mlir::createSCFToControlFlowPass());
-  pm.addPass(llhd::createInlineCallsPass());
-  pm.addPass(mlir::createSymbolDCEPass());
-
-  // Simplify processes, replace signals with process results, and detect
-  // registers.
+/// One round of process and signal lowering: simplify processes, replace
+/// signals with process results, detect registers, remove control flow, turn
+/// reference ports into values, and promote the module-level signals left.
+static void addProcessLowering(OpPassManager &pm, bool sroa,
+                               bool inferClockPorts) {
   auto &modulePM = pm.nest<hw::HWModuleOp>();
   // See https://github.com/llvm/circt/issues/8804.
-  if (options.sroa) {
+  if (sroa)
     modulePM.addPass(mlir::createSROA());
-  }
   modulePM.addPass(llhd::createMem2RegPass());
   modulePM.addPass(llhd::createHoistSignalsPass());
   // Clocked processes may contain counted loops (e.g. resetting all elements
@@ -587,23 +580,45 @@ void circt::populateLlhdToCorePipeline(
   signalPM.addPass(mlir::createCanonicalizerPass());
   signalPM.addPass(createMapArithToCombPass(true));
 
-  // Reference ports whose drives sat in those processes could not be lowered
-  // the first time; once more lowers them and the signals they leave behind.
-  pm.addPass(llhd::createLowerRefPortsPass());
-  auto &finalSignalPM = pm.nest<hw::HWModuleOp>();
-  finalSignalPM.addPass(llhd::createCombineDrivesPass());
-  finalSignalPM.addPass(llhd::createSig2Reg());
-  finalSignalPM.addPass(mlir::createCSEPass());
-  finalSignalPM.addPass(mlir::createCanonicalizerPass());
+  // The registers detected so far show which ports are clocks. A clocked
+  // process whose clock arrives as such a port is only recognized by Deseq
+  // once the port is a `!seq.clock`, so retype them before the next round.
+  if (inferClockPorts) {
+    pm.addPass(seq::createInferClockPorts());
+    auto &anyPM = pm.nestAny();
+    anyPM.addPass(mlir::createCSEPass());
+    anyPM.addPass(mlir::createCanonicalizerPass());
+  }
+}
+
+/// Convert LLHD dialect IR into core dialect IR
+void circt::populateLlhdToCorePipeline(
+    OpPassManager &pm, const LlhdToCorePipelineOptions &options) {
+  // Inline function calls and lower SCF to CF.
+  pm.addNestedPass<hw::HWModuleOp>(llhd::createWrapProceduralOpsPass());
+  pm.addPass(mlir::createSCFToControlFlowPass());
+  pm.addPass(llhd::createInlineCallsPass());
+  pm.addPass(mlir::createSymbolDCEPass());
+
+  // Lowering one process can make another lowerable: a drive hoisted out of a
+  // combinational process lets LowerRefPorts turn its port into a value, the
+  // signal Sig2Reg then promotes, or a port found to be a clock, was what kept
+  // a clocked process from Deseq. On a 4-core Vortex GPU the first round
+  // leaves 271 signals and 5 processes, the second 2 signals and none; a
+  // third round changes nothing.
+  addProcessLowering(pm, options.sroa, options.inferClockPorts);
+  addProcessLowering(pm, /*sroa=*/false, options.inferClockPorts);
 
   // Map `seq.firreg` with array type and `hw.array_inject` self-feedback to
   // `seq.firmem` ops.
   if (options.detectMemories) {
-    finalSignalPM.addPass(seq::createRegOfVecToMem());
-    finalSignalPM.addPass(mlir::createCSEPass());
-    finalSignalPM.addPass(mlir::createCanonicalizerPass());
+    auto &memPM = pm.nest<hw::HWModuleOp>();
+    memPM.addPass(seq::createRegOfVecToMem());
+    memPM.addPass(mlir::createCSEPass());
+    memPM.addPass(mlir::createCanonicalizerPass());
   }
 
+  // Memories detected above clock their ports too.
   if (options.inferClockPorts) {
     pm.addPass(seq::createInferClockPorts());
     auto &anyPM = pm.nestAny();

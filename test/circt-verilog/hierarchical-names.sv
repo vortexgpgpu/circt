@@ -90,16 +90,17 @@ module LeafInst();
   logic leaf_val;
   assign leaf_val = TopRoot.root_val;
 endmodule
+// The upward reference becomes a value port once the leaf only reads it.
 // CHECK: hw.module @TopRoot() {
-// CHECK:   %[[ROOT_VAL:.+]] = llhd.sig : <i1>
-// CHECK:   hw.instance "mid" @MiddleInst(TopRoot.root_val: %[[ROOT_VAL]]: !llhd.ref<i1>) -> ()
+// CHECK:   %true = hw.constant true
+// CHECK:   hw.instance "mid" @MiddleInst(TopRoot.root_val: %true: i1) -> ()
 // CHECK: }
 
-// CHECK: hw.module private @MiddleInst(in %TopRoot.root_val : !llhd.ref<i1>) {
-// CHECK:   hw.instance "leaf" @LeafInst(TopRoot.root_val: %TopRoot.root_val: !llhd.ref<i1>) -> ()
+// CHECK: hw.module private @MiddleInst(in %TopRoot.root_val : i1) {
+// CHECK:   hw.instance "leaf" @LeafInst(TopRoot.root_val: %TopRoot.root_val: i1) -> ()
 // CHECK: }
 
-// CHECK: hw.module private @LeafInst(in %TopRoot.root_val : !llhd.ref<i1>) {
+// CHECK: hw.module private @LeafInst(in %TopRoot.root_val : i1) {
 // CHECK: }
 
 // Regression test for cross-module hierarchical name deduplication bug.
@@ -124,10 +125,11 @@ module Top2();
   assign x = Top1.c1.i;
 endmodule
 
+// The upward drive becomes an output of GrandChild, still named after it.
 // CHECK: hw.module private @Child()
-// CHECK:   hw.instance "gc" @GrandChild(c1.i: {{.+}})
+// CHECK:   hw.instance "gc" @GrandChild() -> (c1.i: i1)
 
-// CHECK: hw.module private @GrandChild(in %c1.i : !llhd.ref<i1>)
+// CHECK: hw.module private @GrandChild(out c1.i : i1)
 
 // CHECK: hw.module @Top1() {
 // CHECK:   hw.instance "c1" @Child() -> ()
