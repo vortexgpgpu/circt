@@ -245,6 +245,12 @@ struct CLOptions {
                "as $bits of an interface port member."),
       cl::init(false), cl::cat(cat)};
 
+  cl::opt<bool> ignoreUninstantiatedModules{
+      "ignore-uninstantiated-modules",
+      cl::desc("Don't elaborate modules that are not instantiated in the "
+               "design to check them, e.g. unused parameterized helpers."),
+      cl::init(false), cl::cat(cat)};
+
   cl::opt<bool> ignoreUnknownModules{
       "ignore-unknown-modules",
       cl::desc("Don't issue an error for instantiations of unknown modules, "
@@ -386,6 +392,7 @@ static LogicalResult executeWithSources(MLIRContext *context,
   options.allowUseBeforeDeclare = opts.allowUseBeforeDeclare;
   options.allowHierarchicalConst = opts.allowHierarchicalConst;
   options.ignoreUnknownModules = opts.ignoreUnknownModules;
+  options.ignoreUninstantiatedModules = opts.ignoreUninstantiatedModules;
   if (opts.loweringMode != LoweringMode::OnlyLint)
     options.topModules = opts.topModules;
   options.paramOverrides = opts.paramOverrides;

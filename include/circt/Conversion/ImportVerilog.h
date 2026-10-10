@@ -116,6 +116,10 @@ struct ImportVerilogOptions {
   /// If true, ignore errors about unknown modules.
   std::optional<bool> ignoreUnknownModules;
 
+  /// If true, do not elaborate modules that are not instantiated in the design
+  /// for semantic checking. Their bodies are neither checked nor lowered.
+  std::optional<bool> ignoreUninstantiatedModules;
+
   /// If non-empty, specifies the list of modules that should serve as the top
   /// modules in the design. If empty, this will be automatically determined
   /// based on which modules are unreferenced elsewhere.
