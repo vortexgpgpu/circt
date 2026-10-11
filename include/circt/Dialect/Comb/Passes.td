@@ -44,6 +44,16 @@ def CombLowBitsNarrowing : Pass<"comb-low-bits-narrowing"> {
   }];
 }
 
+def CombShareAdders : Pass<"comb-share-adders"> {
+  let summary = "Share one adder between the arms of a mux";
+  let description = [{
+    A mux between two sums of a common operand is that operand plus the mux of
+    the other operands: one adder instead of two. A difference counts as a sum
+    of the negated subtrahend when the negation is free, a constant or a mux
+    of constants.
+  }];
+}
+
 def CombOverflowAnnotating : Pass<"comb-overflow-annotating"> {
   let summary = "Annotate comb ops with no overflow signal (nuw).";
   let description = [{
