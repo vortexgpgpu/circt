@@ -822,6 +822,7 @@ struct ModuleVisitor : public BaseVisitor {
       return mlir::emitError(loc)
              << "internal error: predeclared variable `" << varNode.name
              << "` is not a moore.variable";
+    context.convertAttributes(varNode, varOp);
 
     if (const auto *init = varNode.getInitializer()) {
       auto loweredType = cast<moore::RefType>(ref.getType()).getNestedType();
@@ -845,6 +846,7 @@ struct ModuleVisitor : public BaseVisitor {
     if (!netOp)
       return mlir::emitError(loc) << "internal error: predeclared net `"
                                   << netNode.name << "` is not a moore.net";
+    context.convertAttributes(netNode, netOp);
 
     if (const auto *init = netNode.getInitializer()) {
       auto loweredType = cast<moore::RefType>(ref.getType()).getNestedType();
@@ -1398,6 +1400,32 @@ LogicalResult Context::convertCompilation() {
   return success();
 }
 
+void Context::convertAttributes(const slang::ast::Symbol &symbol,
+                                Operation *op) {
+  SmallVector<sv::SVAttributeAttr> svAttrs;
+  for (const auto *attr : compilation.getAttributes(symbol)) {
+    StringAttr exprAttr;
+    if (const auto *syntax = attr->getSyntax()) {
+      const auto &spec = syntax->as<slang::syntax::AttributeSpecSyntax>();
+      if (spec.value) {
+        if (spec.value->expr->kind ==
+            slang::syntax::SyntaxKind::StringLiteralExpression) {
+          exprAttr = builder.getStringAttr(
+              spec.value->expr->as<slang::syntax::LiteralExpressionSyntax>()
+                  .literal.rawText());
+        } else {
+          exprAttr = builder.getStringAttr(attr->getValue().toString());
+        }
+      }
+    }
+    svAttrs.push_back(sv::SVAttributeAttr::get(
+        getContext(), builder.getStringAttr(attr->name), exprAttr,
+        /*emitAsComment=*/false));
+  }
+  if (!svAttrs.empty())
+    sv::setSVAttributes(op, svAttrs);
+}
+
 ModuleLowering *
 Context::convertModuleHeader(const slang::ast::InstanceBodySymbol *module) {
   using slang::ast::ArgumentDirection;
@@ -1627,28 +1655,7 @@ Context::convertModuleHeader(const slang::ast::InstanceBodySymbol *module) {
   // Create an empty module that corresponds to this module.
   auto moduleOp =
       moore::SVModuleOp::create(builder, loc, module->name, moduleType);
-  SmallVector<sv::SVAttributeAttr> svAttrs;
-  for (const auto *attr : compilation.getAttributes(module->getDefinition())) {
-    StringAttr exprAttr;
-    if (const auto *syntax = attr->getSyntax()) {
-      const auto &spec = syntax->as<slang::syntax::AttributeSpecSyntax>();
-      if (spec.value) {
-        if (spec.value->expr->kind ==
-            slang::syntax::SyntaxKind::StringLiteralExpression) {
-          exprAttr = builder.getStringAttr(
-              spec.value->expr->as<slang::syntax::LiteralExpressionSyntax>()
-                  .literal.rawText());
-        } else {
-          exprAttr = builder.getStringAttr(attr->getValue().toString());
-        }
-      }
-    }
-    svAttrs.push_back(sv::SVAttributeAttr::get(
-        getContext(), builder.getStringAttr(attr->name), exprAttr,
-        /*emitAsComment=*/false));
-  }
-  if (!svAttrs.empty())
-    sv::setSVAttributes(moduleOp, svAttrs);
+  convertAttributes(module->getDefinition(), moduleOp);
   orderedRootOps.insert(it, {key, moduleOp});
   moduleOp.getBodyRegion().push_back(block.release());
   lowering.op = moduleOp;

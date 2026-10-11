@@ -323,6 +323,23 @@ void VariableOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
     setNameFn(getResult(), *getName());
 }
 
+/// Whether an op carries attributes beyond its own, such as the SV attributes
+/// of its declaration.
+static bool hasDiscardableAttrs(Operation *op) {
+  return !op->getDiscardableAttrDictionary().empty();
+}
+
+/// Replace a variable or net by an `AssignedVariableOp` of the given value,
+/// which keeps the declaration's name and attributes.
+template <typename OpTy>
+static Value createAssignedVariable(PatternRewriter &rewriter, OpTy op,
+                                    Value value) {
+  auto assigned = AssignedVariableOp::create(rewriter, op.getLoc(),
+                                             op.getNameAttr(), value);
+  assigned->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+  return assigned;
+}
+
 LogicalResult VariableOp::canonicalize(VariableOp op,
                                        PatternRewriter &rewriter) {
   // If the variable is embedded in an SSACFG region, move the initial value
@@ -361,12 +378,14 @@ LogicalResult VariableOp::canonicalize(VariableOp op,
   if (!uniqueAssignOp)
     return failure();
 
-  // If the original variable had a name, create an `AssignedVariableOp` as a
-  // replacement. Otherwise substitute the assigned value directly.
+  // If the original variable had a name or attributes, create an
+  // `AssignedVariableOp` as a replacement. Otherwise substitute the assigned
+  // value directly.
   Value assignedValue = uniqueAssignOp.getSrc();
-  if (auto name = op.getNameAttr(); name && !name.empty())
-    assignedValue = AssignedVariableOp::create(rewriter, op.getLoc(), name,
-                                               uniqueAssignOp.getSrc());
+  if (auto name = op.getNameAttr();
+      (name && !name.empty()) || hasDiscardableAttrs(op))
+    assignedValue =
+        createAssignedVariable(rewriter, op, uniqueAssignOp.getSrc());
 
   // Remove the assign op and replace all reads with the new assigned var op.
   rewriter.eraseOp(uniqueAssignOp);
@@ -530,10 +549,10 @@ LogicalResult NetOp::canonicalize(NetOp op, PatternRewriter &rewriter) {
   if (!uniqueAssignOp && allUsesAreReads && op.getAssignment()) {
     // If the original net had a name, create an `AssignedVariableOp` as a
     // replacement. Otherwise substitute the assigned value directly.
-    auto assignedValue = op.getAssignment();
-    if (auto name = op.getNameAttr(); name && !name.empty())
-      assignedValue = AssignedVariableOp::create(rewriter, op.getLoc(), name,
-                                                 assignedValue);
+    Value assignedValue = op.getAssignment();
+    if (auto name = op.getNameAttr();
+        (name && !name.empty()) || hasDiscardableAttrs(op))
+      assignedValue = createAssignedVariable(rewriter, op, assignedValue);
 
     // Replace all reads with the new assigned var op and remove the original
     // net op.
@@ -559,6 +578,10 @@ void AssignedVariableOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
 
 LogicalResult AssignedVariableOp::canonicalize(AssignedVariableOp op,
                                                PatternRewriter &rewriter) {
+  // Keep a variable that carries attributes, such as `(* keep *)`.
+  if (hasDiscardableAttrs(op))
+    return failure();
+
   // Eliminate chained variables with the same name.
   // var(name, var(name, x)) -> var(name, x)
   if (auto otherOp = op.getInput().getDefiningOp<AssignedVariableOp>()) {

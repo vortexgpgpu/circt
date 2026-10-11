@@ -14,6 +14,8 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/LLHD/LLHDOps.h"
 #include "circt/Dialect/LLHD/LLHDPasses.h"
+#include "circt/Dialect/SV/SVAttributes.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "llvm/Support/Debug.h"
 
 #include "mlir/IR/Matchers.h"
@@ -29,6 +31,27 @@ namespace llhd {
 
 using namespace mlir;
 using namespace circt;
+
+/// Keep the SV attributes of a promoted signal, e.g. `(* ram_style *)` or
+/// `(* use_dsp *)`, which would otherwise disappear with it: a register that
+/// holds the signal's value takes them over, and any other value is passed
+/// through a wire of the signal's name that carries them.
+static Value keepAttributes(llhd::SignalOp sigOp, Value value,
+                            OpBuilder &builder) {
+  auto svAttrs = sv::getSVAttributes(sigOp);
+  if (!svAttrs || svAttrs.empty())
+    return value;
+  if (auto *defOp = value.getDefiningOp();
+      defOp && isa<seq::FirRegOp, seq::CompRegOp>(defOp)) {
+    sv::addSVAttributes(
+        defOp, llvm::to_vector(svAttrs.getAsRange<sv::SVAttributeAttr>()));
+    return value;
+  }
+  auto wire =
+      hw::WireOp::create(builder, sigOp.getLoc(), value, sigOp.getNameAttr());
+  sv::setSVAttributes(wire, svAttrs);
+  return wire;
+}
 
 namespace {
 
@@ -279,6 +302,8 @@ public:
       }
     }
 
+    val = keepAttributes(sigOp, val, builder);
+
     // Handle the reads by extracting right number of bits at the right offset.
     for (auto interval : readIntervals) {
       if (interval.low.isStatic()) {
@@ -404,9 +429,11 @@ static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
     return failure();
 
   // Rebuild every probed value from the driven value.
+  OpBuilder sigBuilder(drive);
+  Value driven = keepAttributes(sigOp, drive.getValue(), sigBuilder);
   for (auto &[probe, path] : probes) {
     OpBuilder builder(probe);
-    Value value = drive.getValue();
+    Value value = driven;
     for (auto *proj : path) {
       auto loc = proj->getLoc();
       if (auto op = dyn_cast<llhd::SigArrayGetOp>(proj)) {

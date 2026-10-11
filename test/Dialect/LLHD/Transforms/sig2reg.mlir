@@ -213,3 +213,25 @@ hw.module @SingleWholeDrive(in %v : !hw.array<2xi8>, out a : i8, out b : i4, out
   %c = llhd.prb %x : !hw.array<2xi8>
   hw.output %a, %b, %c : i8, i4, !hw.array<2xi8>
 }
+
+// The SV attributes of a promoted signal move to the register holding its
+// value, or else to a wire of the signal's name.
+// CHECK-LABEL: hw.module @KeepAttributes
+hw.module @KeepAttributes(in %clk : !seq.clock, in %a : i8, in %b : i8, out prod : i8, out q : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  %c0_i8 = hw.constant 0 : i8
+  // CHECK: [[MUL:%.+]] = comb.mul %a, %b
+  // CHECK: [[PROD:%prod]] = hw.wire [[MUL]] {{ *}}{sv.attributes = [#sv.attribute<"use_dsp" = "\22yes\22">]} : i8
+  %prod = llhd.sig name "prod" %c0_i8 {sv.attributes = [#sv.attribute<"use_dsp" = "\22yes\22">]} : <i8>
+  %0 = comb.mul %a, %b : i8
+  llhd.drv %prod, %0 after %epsilon : i8
+  // CHECK: [[Q:%.+]] = seq.firreg [[PROD]] clock %clk {sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i8
+  %q = llhd.sig name "q" %c0_i8 {sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : <i8>
+  %1 = llhd.prb %prod : i8
+  %2 = seq.firreg %1 clock %clk : i8
+  llhd.drv %q, %2 after %epsilon : i8
+  %3 = llhd.prb %prod : i8
+  %4 = llhd.prb %q : i8
+  // CHECK: hw.output [[PROD]], [[Q]]
+  hw.output %3, %4 : i8, i8
+}

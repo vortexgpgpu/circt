@@ -258,6 +258,9 @@ struct Context {
   /// have already been created earlier through a `convertModuleHeader` call.
   /// `module` must be the canonical module body if there is one.
   LogicalResult convertModuleBody(const slang::ast::InstanceBodySymbol *module);
+  /// Attach the `(* ... *)` attributes of a declaration to the op it was
+  /// converted to, as SV attributes.
+  void convertAttributes(const slang::ast::Symbol &symbol, Operation *op);
   LogicalResult convertPackage(const slang::ast::PackageSymbol &package);
   FunctionLowering *
   declareFunction(const slang::ast::SubroutineSymbol &subroutine);

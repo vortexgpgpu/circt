@@ -1156,8 +1156,10 @@ struct VariableOpConversion : public OpConversionPattern<VariableOp> {
         return failure();
     }
 
-    rewriter.replaceOpWithNewOp<llhd::SignalOp>(op, resultType,
-                                                op.getNameAttr(), init);
+    auto signal = rewriter.replaceOpWithNewOp<llhd::SignalOp>(
+        op, resultType, op.getNameAttr(), init);
+    if (auto svAttrs = sv::getSVAttributes(op))
+      sv::setSVAttributes(signal, svAttrs);
     return success();
   }
 };
@@ -1183,6 +1185,8 @@ struct NetOpConversion : public OpConversionPattern<NetOp> {
         createInitialValue(op.getKind(), rewriter, loc, width, elementType);
     auto signal = rewriter.replaceOpWithNewOp<llhd::SignalOp>(
         op, resultType, op.getNameAttr(), init);
+    if (auto svAttrs = sv::getSVAttributes(op))
+      sv::setSVAttributes(signal, svAttrs);
 
     if (auto assignedValue = adaptor.getAssignment()) {
       auto timeAttr = llhd::TimeAttr::get(resultType.getContext(), 0U,
@@ -2436,8 +2440,9 @@ struct AssignedVariableOpConversion
   LogicalResult
   matchAndRewrite(AssignedVariableOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<hw::WireOp>(op, adaptor.getInput(),
-                                            adaptor.getNameAttr());
+    auto wire = rewriter.replaceOpWithNewOp<hw::WireOp>(op, adaptor.getInput(),
+                                                        adaptor.getNameAttr());
+    wire->setDiscardableAttrs(op->getDiscardableAttrDictionary());
     return success();
   }
 };

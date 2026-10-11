@@ -72,7 +72,7 @@ public:
             addVivadoRAMAddressConflictSynthesisBugWorkaround),
         mlirModuleNamespace(mlirModuleNamespace) {}
 
-  void generateMemory(HWModuleOp op, FirMemory mem);
+  void generateMemory(HWModuleOp op, FirMemory mem, ArrayAttr svAttributes);
 };
 
 struct HWMemSimImplPass : public impl::HWMemSimImplBase<HWMemSimImplPass> {
@@ -181,7 +181,8 @@ Value HWMemSimImpl::addPipelineStages(ImplicitLocOpBuilder &b,
   return data;
 }
 
-void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem) {
+void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
+                                  ArrayAttr svAttributes) {
   ImplicitLocOpBuilder b(op.getLoc(), op.getBody());
 
   InnerSymbolNamespace moduleNamespace(op);
@@ -203,23 +204,34 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem) {
       sv::RegOp::create(b, UnpackedArrayType::get(dataType, mem.depth),
                         b.getStringAttr("Memory"));
 
+  // The memory keeps the attributes it was declared with. The workaround
+  // below only adds what the design did not already decide.
+  if (svAttributes)
+    circt::sv::setSVAttributes(reg, svAttributes);
+  auto hasAttribute = [&](StringRef name) {
+    return svAttributes &&
+           llvm::any_of(svAttributes.getAsRange<sv::SVAttributeAttr>(),
+                        [&](auto attr) { return attr.getName() == name; });
+  };
+
   if (addVivadoRAMAddressConflictSynthesisBugWorkaround) {
-    if (mem.readLatency == 0) {
+    if (mem.readLatency == 0 && !hasAttribute("ram_style")) {
       // If the read latency is zero, we regard the memory as write-first.
       // We add a SV attribute to specify a ram style to use LUTs for Vivado
       // to avoid a bug that miscompiles the write-first memory. See "RAM
       // address conflict and Vivado synthesis bug" issue in the vivado forum
       // for the more detail.
-      circt::sv::setSVAttributes(
+      circt::sv::addSVAttributes(
           reg, sv::SVAttributeAttr::get(b.getContext(), "ram_style",
                                         R"("distributed")",
                                         /*emitAsComment=*/false));
-    } else if (mem.readLatency == 1 && numPorts > 1) {
+    } else if (mem.readLatency == 1 && numPorts > 1 &&
+               !hasAttribute("rw_addr_collision")) {
       // If the read address is registered and the RAM has multiple ports,
       // force write-first behaviour by setting rw_addr_collision. This avoids
       // unpredictable behaviour. Downstreams flows should watch for `VPL
       // 8-6430`.
-      circt::sv::setSVAttributes(
+      circt::sv::addSVAttributes(
           reg, sv::SVAttributeAttr::get(b.getContext(), "rw_addr_collision",
                                         R"("yes")", /*emitAsComment=*/false));
     }
@@ -767,7 +779,7 @@ void HWMemSimImplPass::runOnOperation() {
                      disableRegRandomization,
                      addVivadoRAMAddressConflictSynthesisBugWorkaround,
                      mlirModuleNamespace)
-            .generateMemory(newModule, mem);
+            .generateMemory(newModule, mem, sv::getSVAttributes(oldModule));
         if (auto fragments = oldModule->getAttr(emit::getFragmentsAttrName()))
           newModule->setAttr(emit::getFragmentsAttrName(), fragments);
       }

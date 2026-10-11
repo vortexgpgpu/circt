@@ -8,6 +8,7 @@
 
 #include "FirMemLowering.h"
 #include "circt/Dialect/HW/HWAttributes.h"
+#include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Support/Path.h"
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/MapVector.h"
@@ -109,6 +110,7 @@ FirMemConfig FirMemLowering::collectMemory(FirMemOp op) {
   cfg.outputFile = op.getOutputFileAttr();
   if (auto prefix = op.getPrefixAttr())
     cfg.prefix = prefix.getValue();
+  cfg.svAttributes = sv::getSVAttributes(op);
   // TODO: Handle modName (maybe not?)
   // TODO: Handle groupID (maybe not?)
 
@@ -319,6 +321,9 @@ FirMemLowering::createMemoryModule(FirMemConfig &mem,
       hw::HWModuleGeneratedOp::create(builder, loc, schemaSymRef, name, ports,
                                       StringRef{}, ArrayAttr{}, genAttrs);
 
+  if (mem.svAttributes)
+    sv::setSVAttributes(genOp, mem.svAttributes);
+
   // Put the memory in the lowest common ancestor directory.
   if (auto outputFile = computeCommonOutputFile(memOps))
     genOp->setAttr("output_file", outputFile);
@@ -406,10 +411,13 @@ void FirMemLowering::lowerMemoriesInModule(
     for (auto [oldOutput, newOutput] : llvm::zip(outputs, instOp.getResults()))
       oldOutput.replaceAllUsesWith(newOutput);
 
-    // Carry attributes over from the `FirMemOp` to the `InstanceOp`.
+    // Carry attributes over from the `FirMemOp` to the `InstanceOp`, except
+    // the SV attributes, which belong to the memory itself and are part of
+    // its configuration.
     auto defaultAttrNames = memOp.getAttributeNames();
     for (auto namedAttr : memOp->getAttrs())
-      if (!llvm::is_contained(defaultAttrNames, namedAttr.getName()))
+      if (!llvm::is_contained(defaultAttrNames, namedAttr.getName()) &&
+          namedAttr.getName() != sv::SVAttributeAttr::getSVAttributesAttrName())
         instOp->setAttr(namedAttr.getName(), namedAttr.getValue());
 
     // Get rid of the `FirMemOp`.

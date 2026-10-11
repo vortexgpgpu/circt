@@ -183,16 +183,22 @@ bool RegOfVecToMemPass::createFirMemory(MemoryPattern &pattern) {
 
   ImplicitLocOpBuilder builder(pattern.memReg.getLoc(), pattern.memReg);
 
-  // Create FirMem
+  // Create FirMem, named after the register it replaces.
+  auto memName = pattern.memReg.getNameAttr();
+  if (!memName || memName.empty())
+    memName = builder.getStringAttr("mem");
   auto memType =
       FirMemType::get(builder.getContext(), depth, width, /*maskWidth=*/1);
   auto firMem = seq::FirMemOp::create(
       builder, memType, /*readLatency=*/0, /*writeLatency=*/1,
       /*readUnderWrite=*/seq::RUW::Undefined,
       /*writeUnderWrite=*/seq::WUW::Undefined,
-      /*name=*/builder.getStringAttr("mem"), /*innerSym=*/hw::InnerSymAttr{},
+      /*name=*/memName, /*innerSym=*/hw::InnerSymAttr{},
       /*init=*/seq::FirMemInitAttr{}, /*prefix=*/StringAttr{},
       /*outputFile=*/Attribute{});
+  // Carry over dialect attributes such as the `(* ram_style *)` the register
+  // was declared with.
+  firMem->setDialectAttrs(pattern.memReg->getDialectAttrs());
 
   // FIRRTL currently uses a 1-bit address for a single element memory,
   // however HW arrays use 0-bit addresses. To bridge this gap, create a 1-bit

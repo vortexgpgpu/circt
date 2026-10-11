@@ -16,7 +16,7 @@ module Memory(
 );
   // MEMON-DAG: [[MEM:%.+]] = seq.firmem 0, 1, undefined, undefined : <16 x 42, mask 1>
   // MEMON-DAG: [[RDATA:%.+]] = seq.firmem.read_port [[MEM]][%raddr]
-  // MEMON-DAG: seq.firmem.write_port %mem[%waddr] = %wdata, clock %clock enable %wenable
+  // MEMON-DAG: seq.firmem.write_port [[MEM]][%waddr] = %wdata, clock %clock enable %wenable
 
   // MEMOFF-DAG: [[REG:%.+]] = seq.firreg [[NEXT:%.+]] clock %clock : !hw.array<16xi42>
   // MEMOFF-DAG: [[TMP:%.+]] = hw.array_inject [[REG]][%waddr], %wdata

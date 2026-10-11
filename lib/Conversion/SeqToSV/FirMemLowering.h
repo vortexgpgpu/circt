@@ -37,21 +37,24 @@ struct FirMemConfig {
   bool initIsInline = false;
   Attribute outputFile;
   StringRef prefix;
+  /// The SV attributes of the memory, e.g. `(* ram_style = "block" *)`.
+  ArrayAttr svAttributes;
 
   llvm::hash_code hashValue() const {
     return llvm::hash_combine(numReadPorts, numWritePorts, numReadWritePorts,
                               dataWidth, depth, readLatency, writeLatency,
                               maskBits, readUnderWrite, writeUnderWrite,
-                              initFilename, initIsBinary, initIsInline,
-                              prefix) ^
+                              initFilename, initIsBinary, initIsInline, prefix,
+                              svAttributes) ^
            llvm::hash_combine_range(writeClockIDs.begin(), writeClockIDs.end());
   }
 
   auto getTuple() const {
-    return std::make_tuple(
-        numReadPorts, numWritePorts, numReadWritePorts, dataWidth, depth,
-        readLatency, writeLatency, maskBits, readUnderWrite, writeUnderWrite,
-        writeClockIDs, initFilename, initIsBinary, initIsInline, prefix);
+    return std::make_tuple(numReadPorts, numWritePorts, numReadWritePorts,
+                           dataWidth, depth, readLatency, writeLatency,
+                           maskBits, readUnderWrite, writeUnderWrite,
+                           writeClockIDs, initFilename, initIsBinary,
+                           initIsInline, prefix, svAttributes);
   }
 
   bool operator==(const FirMemConfig &other) const {

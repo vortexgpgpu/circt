@@ -22,9 +22,9 @@ hw.module private @complex_mem(in %CLK : i1, in %D : i46, in %ADR : i13, in %WE 
 
 // CHECK: %[[clock:.+]] = seq.to_clock %CLK
 // CHECK: %[[V6:.+]] = comb.and %ME, %WE : i1
-// CHECK: %mem = seq.firmem 0, 1, undefined, undefined : <8192 x 46, mask 1>
-// CHECK: %[[READ:.+]] = seq.firmem.read_port %mem[%ADR], clock %[[clock]] enable %true
-// CHECK: seq.firmem.write_port %mem[%ADR] = %D, clock %[[clock]] enable %[[V6]]
+// CHECK: %mem_core = seq.firmem 0, 1, undefined, undefined : <8192 x 46, mask 1>
+// CHECK: %[[READ:.+]] = seq.firmem.read_port %mem_core[%ADR], clock %[[clock]] enable %true
+// CHECK: seq.firmem.write_port %mem_core[%ADR] = %D, clock %[[clock]] enable %[[V6]]
 // CHECK-NOT: seq.firreg %{{.*}} : !hw.array<8192xi46>
 // CHECK-NOT: hw.array_get
 // CHECK-NOT: hw.array_inject
@@ -60,12 +60,12 @@ hw.module @single_el_mem(in %clk : i1, in %addr : i0, in %data : i8, in %we : i1
 }
 
 // CHECK: %[[clock:.+]] = seq.to_clock %clk
-// CHECK: %mem = seq.firmem 0, 1, undefined, undefined : <1 x 8, mask 1>
+// CHECK: %msingel = seq.firmem 0, 1, undefined, undefined : <1 x 8, mask 1>
 // CHECK: %[[FALSE:.+]] = hw.constant false
 // CHECK: %[[TRUE:.+]] = hw.constant true
-// CHECK: %[[READ:.+]] = seq.firmem.read_port %mem[%[[FALSE]]], clock %[[clock]] enable %[[TRUE]]
+// CHECK: %[[READ:.+]] = seq.firmem.read_port %msingel[%[[FALSE]]], clock %[[clock]] enable %[[TRUE]]
 // CHECK: %[[FALSE:.+]] = hw.constant false
-// CHECK: seq.firmem.write_port %mem[%[[FALSE]]] = %data, clock %[[clock]] enable %we
+// CHECK: seq.firmem.write_port %msingel[%[[FALSE]]] = %data, clock %[[clock]] enable %we
 // CHECK-NOT: seq.firreg %{{.*}} : !hw.array<8192xi46>
 // CHECK-NOT: hw.array_get
 // CHECK-NOT: hw.array_inject
@@ -95,4 +95,15 @@ hw.module @shared_reg_test(in %clk: i1, in %addr: i2, in %data: i8, in %we: i1, 
   
   // Register used elsewhere - should prevent transformation
   hw.output %mem, %read : !hw.array<4xi8>, i8
+}
+// The memory keeps the SV attributes its register was declared with.
+// CHECK-LABEL: hw.module @mem_attributes
+// CHECK: seq.firmem 0, 1, undefined, undefined {sv.attributes = [#sv.attribute<"ram_style" = "\22block\22">]} : <4 x 8, mask 1>
+hw.module @mem_attributes(in %clk : i1, in %addr : i2, in %data : i8, in %we : i1, out out : i8) {
+    %clock = seq.to_clock %clk
+    %read = hw.array_get %mem[%addr] : !hw.array<4xi8>, i2
+    %write = hw.array_inject %mem[%addr], %data : !hw.array<4xi8>, i2
+    %next = comb.mux %we, %write, %mem : !hw.array<4xi8>
+    %mem = seq.firreg %next clock %clock {sv.attributes = [#sv.attribute<"ram_style" = "\22block\22">]} : !hw.array<4xi8>
+    hw.output %read : i8
 }
