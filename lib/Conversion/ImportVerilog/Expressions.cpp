@@ -1132,6 +1132,19 @@ struct RvalueExprVisitor : public ExprVisitor {
     auto type = context.convertType(*expr.type);
     if (!type)
       return {};
+    // An operand propagated to the type of the expression it is part of is
+    // extended according to that type: it is sign-extended only if the
+    // expression is signed, whatever the operand's own signedness (IEEE
+    // 1800-2017 § 11.8.2). `4'(i) - b` with `b` unsigned is unsigned, so the
+    // signed `4'(i)` is zero-extended.
+    if (expr.conversionKind == slang::ast::ConversionKind::Propagated &&
+        expr.type->isIntegral() && expr.operand().type->isIntegral()) {
+      auto value = context.convertRvalueExpression(expr.operand());
+      if (!value)
+        return {};
+      return context.materializeConversion(type, value, expr.type->isSigned(),
+                                           loc);
+    }
     return context.convertRvalueExpression(expr.operand(), type);
   }
 
