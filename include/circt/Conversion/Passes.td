@@ -550,8 +550,19 @@ def ConvertMooreToCore : Pass<"convert-moore-to-core", "mlir::ModuleOp"> {
   let summary = "Convert Moore to Core";
   let description = [{
     This pass translates Moore to the core dialects.
+
+    Unpacked arrays become packed `hw.array`s. With
+    `preserve-unpacked-ports`, the unpacked array ports of top-level modules
+    instead keep their unpacked type as `hw.uarray`, bitcast to and from the
+    packed array the body works on, so that the module keeps the interface it
+    was declared with.
   }];
   let constructor = "circt::createConvertMooreToCorePass()";
+  let options = [
+    Option<"preserveUnpackedPorts", "preserve-unpacked-ports", "bool",
+           "false",
+           "Keep the unpacked array ports of top-level modules unpacked">,
+  ];
   let dependentDialects = [
     "comb::CombDialect",
     "hw::HWDialect",

@@ -13,6 +13,7 @@
 #ifndef CIRCT_CONVERSION_IMPORTVERILOG_H
 #define CIRCT_CONVERSION_IMPORTVERILOG_H
 
+#include "circt/Conversion/MooreToCore.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/Pass/PassOptions.h"
 #include "llvm/Support/CommandLine.h"
@@ -178,7 +179,8 @@ importVerilog(llvm::SourceMgr &sourceMgr, mlir::MLIRContext *context,
 void populateVerilogToMoorePipeline(mlir::OpPassManager &pm);
 
 /// Convert Moore dialect IR into core dialect IR
-void populateMooreToCorePipeline(mlir::OpPassManager &pm);
+void populateMooreToCorePipeline(mlir::OpPassManager &pm,
+                                 const ConvertMooreToCoreOptions &options = {});
 
 /// Convert LLHD dialect IR into core dialect IR
 struct LlhdToCorePipelineOptions

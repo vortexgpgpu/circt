@@ -24,6 +24,8 @@ namespace circt {
 
 /// Create an Moore to Comb/HW/LLHD conversion pass.
 std::unique_ptr<OperationPass<ModuleOp>> createConvertMooreToCorePass();
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertMooreToCorePass(const ConvertMooreToCoreOptions &options);
 
 } // namespace circt
 

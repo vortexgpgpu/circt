@@ -1378,11 +1378,94 @@ static void fixUpEmptyModules(hw::HWEmittableModuleLike module) {
 }
 
 // NOLINTNEXTLINE(misc-no-recursion)
+/// The packed array type with the dimensions of an unpacked one.
+static Type getPackedArrayType(Type type) {
+  if (auto array = hw::type_dyn_cast<UnpackedArrayType>(type))
+    return ArrayType::get(getPackedArrayType(array.getElementType()),
+                          array.getNumElements());
+  return type;
+}
+
+static Value getArrayIndex(ImplicitLocOpBuilder &builder, size_t index,
+                           size_t size) {
+  return hw::ConstantOp::create(builder,
+                                APInt(llvm::Log2_64_Ceil(size), index));
+}
+
+/// Copy an unpacked array into a packed one element by element. The elements
+/// are read through a declaration, the only thing Verilog can index that is
+/// not a port or a variable.
+static Value packArray(ImplicitLocOpBuilder &builder, Value value,
+                       bool procedural) {
+  auto array = hw::type_dyn_cast<UnpackedArrayType>(value.getType());
+  if (!array)
+    return value;
+  Value decl;
+  if (procedural) {
+    decl = sv::LogicOp::create(builder, value.getType());
+    sv::BPAssignOp::create(builder, decl, value);
+  } else {
+    decl = sv::WireOp::create(builder, value.getType());
+    sv::AssignOp::create(builder, decl, value);
+  }
+  // Array creation lists the highest index first.
+  size_t size = array.getNumElements();
+  SmallVector<Value> elements;
+  for (size_t index = size; index-- > 0;) {
+    auto element = sv::ArrayIndexInOutOp::create(
+        builder, decl, getArrayIndex(builder, index, size));
+    elements.push_back(packArray(
+        builder, sv::ReadInOutOp::create(builder, element), procedural));
+  }
+  return hw::ArrayCreateOp::create(builder, elements);
+}
+
+/// Copy a packed array into an unpacked array of the given type, element by
+/// element.
+static Value unpackArray(ImplicitLocOpBuilder &builder, Value value,
+                         Type type) {
+  auto array = hw::type_dyn_cast<UnpackedArrayType>(type);
+  if (!array)
+    return value;
+  size_t size = array.getNumElements();
+  SmallVector<Value> elements;
+  for (size_t index = size; index-- > 0;) {
+    auto element = hw::ArrayGetOp::create(builder, value,
+                                          getArrayIndex(builder, index, size));
+    elements.push_back(unpackArray(builder, element, array.getElementType()));
+  }
+  return sv::UnpackedArrayCreateOp::create(builder, type, elements);
+}
+
+/// Verilog does not assign between packed and unpacked arrays, so a bitcast
+/// to or from an unpacked array goes through the packed array with the same
+/// dimensions, copied element by element.
+static void lowerUnpackedArrayBitcasts(hw::HWEmittableModuleLike module) {
+  SmallVector<hw::BitcastOp> bitcasts;
+  module.walk([&](hw::BitcastOp op) {
+    if (hw::type_isa<UnpackedArrayType>(op.getInput().getType()) ||
+        hw::type_isa<UnpackedArrayType>(op.getType()))
+      bitcasts.push_back(op);
+  });
+  for (auto op : bitcasts) {
+    ImplicitLocOpBuilder builder(op.getLoc(), op);
+    bool procedural = op->getParentOp()->hasTrait<ProceduralRegion>();
+    Value value = packArray(builder, op.getInput(), procedural);
+    auto packedType = getPackedArrayType(op.getType());
+    if (value.getType() != packedType)
+      value = hw::BitcastOp::create(builder, packedType, value);
+    op.replaceAllUsesWith(unpackArray(builder, value, op.getType()));
+    op.erase();
+  }
+}
+
 LogicalResult ExportVerilog::prepareHWModule(hw::HWEmittableModuleLike module,
                                              const LoweringOptions &options) {
   // If the module body is empty, just skip it.
   if (!module.getBodyBlock())
     return success();
+
+  lowerUnpackedArrayBitcasts(module);
 
   // Zero-valued logic pruning.
   pruneZeroValuedLogic(module);

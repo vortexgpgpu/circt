@@ -518,9 +518,10 @@ void circt::populateVerilogToMoorePipeline(OpPassManager &pm) {
 }
 
 /// Convert Moore dialect IR into core dialect IR
-void circt::populateMooreToCorePipeline(OpPassManager &pm) {
+void circt::populateMooreToCorePipeline(
+    OpPassManager &pm, const ConvertMooreToCoreOptions &options) {
   // Perform the conversion.
-  pm.addPass(createConvertMooreToCorePass());
+  pm.addPass(createConvertMooreToCorePass(options));
 
   {
     // Conversion to the core dialects likely uncovers new canonicalization

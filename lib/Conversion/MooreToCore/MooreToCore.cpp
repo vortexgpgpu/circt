@@ -4214,13 +4214,93 @@ static void populateOpConversion(ConversionPatternSet &patterns,
 namespace {
 struct MooreToCorePass
     : public circt::impl::ConvertMooreToCoreBase<MooreToCorePass> {
+  using ConvertMooreToCoreBase::ConvertMooreToCoreBase;
   void runOnOperation() override;
+};
+
+/// An unpacked array port of a top-level module, by port index, with the
+/// `hw.uarray` type it keeps.
+struct UnpackedPort {
+  size_t portId;
+  Type type;
 };
 } // namespace
 
 /// Create a Moore to core dialects conversion pass.
 std::unique_ptr<OperationPass<ModuleOp>> circt::createConvertMooreToCorePass() {
   return std::make_unique<MooreToCorePass>();
+}
+
+std::unique_ptr<OperationPass<ModuleOp>>
+circt::createConvertMooreToCorePass(const ConvertMooreToCoreOptions &options) {
+  return std::make_unique<MooreToCorePass>(options);
+}
+
+/// The type an unpacked array port keeps: its unpacked dimensions as
+/// `hw.uarray`, around the converted packed element type.
+static Type getUnpackedPortType(const TypeConverter &typeConverter, Type type) {
+  auto array = dyn_cast<UnpackedArrayType>(type);
+  if (!array)
+    return typeConverter.convertType(type);
+  auto elementType = getUnpackedPortType(typeConverter, array.getElementType());
+  if (!elementType)
+    return {};
+  return hw::UnpackedArrayType::get(elementType, array.getSize());
+}
+
+/// Find the unpacked array ports of the modules no instance refers to, before
+/// the conversion erases their Moore types.
+static DenseMap<StringAttr, SmallVector<UnpackedPort>>
+collectUnpackedPorts(ModuleOp module, const TypeConverter &typeConverter) {
+  DenseSet<StringAttr> instantiated;
+  module.walk([&](InstanceOp op) {
+    instantiated.insert(op.getModuleNameAttr().getAttr());
+  });
+  DenseMap<StringAttr, SmallVector<UnpackedPort>> result;
+  for (auto op : module.getOps<SVModuleOp>()) {
+    if (instantiated.contains(op.getSymNameAttr()))
+      continue;
+    for (auto [portId, port] : llvm::enumerate(op.getModuleType().getPorts()))
+      if (isa<UnpackedArrayType>(port.type))
+        if (auto type = getUnpackedPortType(typeConverter, port.type))
+          result[op.getSymNameAttr()].push_back({portId, type});
+  }
+  return result;
+}
+
+/// Retype the collected ports of the converted modules, bitcasting to and from
+/// the packed arrays the bodies were converted to.
+static void restoreUnpackedPorts(
+    ModuleOp module,
+    const DenseMap<StringAttr, SmallVector<UnpackedPort>> &unpackedPorts) {
+  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
+    auto it = unpackedPorts.find(hwModule.getModuleNameAttr());
+    if (it == unpackedPorts.end())
+      continue;
+    auto moduleType = hwModule.getHWModuleType();
+    SmallVector<hw::ModulePort> ports(moduleType.getPorts());
+    auto *body = hwModule.getBodyBlock();
+    auto outputOp = cast<hw::OutputOp>(body->getTerminator());
+    auto inputBuilder = OpBuilder::atBlockBegin(body);
+    auto outputBuilder = OpBuilder(outputOp);
+    for (auto [portId, type] : it->second) {
+      if (ports[portId].dir == hw::ModulePort::Direction::Output) {
+        auto &operand =
+            outputOp->getOpOperand(moduleType.getOutputIdForPortId(portId));
+        operand.set(hw::BitcastOp::create(outputBuilder, outputOp.getLoc(),
+                                          type, operand.get()));
+      } else {
+        auto arg = body->getArgument(moduleType.getInputIdForPortId(portId));
+        auto packedType = arg.getType();
+        arg.setType(type);
+        auto cast =
+            hw::BitcastOp::create(inputBuilder, arg.getLoc(), packedType, arg);
+        arg.replaceAllUsesExcept(cast, cast);
+      }
+      ports[portId].type = type;
+    }
+    hwModule.setHWModuleType(hw::ModuleType::get(module.getContext(), ports));
+  }
 }
 
 /// This is the main entrypoint for the Moore to Core conversion pass.
@@ -4245,6 +4325,12 @@ void MooreToCorePass::runOnOperation() {
   mlir::cf::populateCFStructuralTypeConversionsAndLegality(typeConverter,
                                                            patterns, target);
 
+  DenseMap<StringAttr, SmallVector<UnpackedPort>> unpackedPorts;
+  if (preserveUnpackedPorts)
+    unpackedPorts = collectUnpackedPorts(module, typeConverter);
+
   if (failed(applyFullConversion(module, target, std::move(patterns))))
-    signalPassFailure();
+    return signalPassFailure();
+
+  restoreUnpackedPorts(module, unpackedPorts);
 }

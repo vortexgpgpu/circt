@@ -154,6 +154,11 @@ struct CLOptions {
       cl::desc("Retype `i1` ports used as clocks to `!seq.clock`"),
       cl::init(true), cl::cat(cat)};
 
+  cl::opt<bool> preserveUnpackedPorts{
+      "preserve-unpacked-ports",
+      cl::desc("Keep the unpacked array ports of top-level modules unpacked"),
+      cl::init(false), cl::cat(cat)};
+
   cl::opt<bool> sroa{
       "sroa",
       cl::desc("Destructure arrays and structs into individual signals."),
@@ -343,7 +348,9 @@ static void populatePasses(PassManager &pm) {
   populateVerilogToMoorePipeline(pm);
   if (opts.loweringMode == LoweringMode::OutputIRMoore)
     return;
-  populateMooreToCorePipeline(pm);
+  ConvertMooreToCoreOptions mooreToCoreOptions;
+  mooreToCoreOptions.preserveUnpackedPorts = opts.preserveUnpackedPorts;
+  populateMooreToCorePipeline(pm, mooreToCoreOptions);
   if (opts.loweringMode == LoweringMode::OutputIRLLHD)
     return;
   LlhdToCorePipelineOptions options;
