@@ -2,6 +2,7 @@ add_circt_dialect_library(CIRCTCombTransforms
   LowerComb.cpp
   IntRangeOptimizations.cpp
   IntRangeAnnotations.cpp
+  LowBitsNarrowing.cpp
   BalanceMux.cpp
   AssumeTwoValued.cpp
   SimplifyTruthTable.cpp

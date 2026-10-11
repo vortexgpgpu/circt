@@ -34,6 +34,16 @@ def CombIntRangeNarrowing : Pass<"comb-int-range-narrowing"> {
   }];
 }
 
+def CombLowBitsNarrowing : Pass<"comb-low-bits-narrowing"> {
+  let summary = "Narrow additions and subtractions from their known low zeros";
+  let description = [{
+    The low bits of a sum where all operands but one are known zero are that
+    operand's low bits, and the low bits of a difference whose subtrahend's are
+    known zero are the minuend's: nothing carries out of them. The op is
+    narrowed to the bits above.
+  }];
+}
+
 def CombOverflowAnnotating : Pass<"comb-overflow-annotating"> {
   let summary = "Annotate comb ops with no overflow signal (nuw).";
   let description = [{
