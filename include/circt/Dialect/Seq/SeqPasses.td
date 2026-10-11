@@ -127,6 +127,25 @@ def RegOfVecToMem : Pass<"seq-reg-of-vec-to-mem", "hw::HWModuleOp"> {
   }];
 }
 
+def RegConstProp : Pass<"seq-reg-const-prop", "hw::HWModuleOp"> {
+  let summary = "Replace the register bits that only hold one constant";
+  let description = [{
+    Finds the bits of `seq.firreg` registers that only ever hold one constant
+    and replaces them with it, keeping the other bits in a narrower register.
+    A bit holds a constant `c` when its preset and reset values, if any, are
+    `c`, and its next value is `c` or the bit itself, through the module's
+    logic, given what is found of the other registers' bits. The analysis is an
+    optimistic fixpoint over every bit, like sparse conditional constant
+    propagation, so a register that keeps a constant through a feedback loop of
+    enables and holds is found. A bit that no constant ever defines, such as a
+    register holding its undefined initial value, is not one.
+
+    Synthesis tools do this on flip-flops; it matters before registers are
+    turned into something they cannot see through, such as memories.
+  }];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
+}
+
 def InferClockPorts : Pass<"seq-infer-clock-ports", "mlir::ModuleOp"> {
   let summary = "Infer `!seq.clock` types for `i1` ports used as clocks";
   let description = [{
