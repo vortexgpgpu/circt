@@ -2369,8 +2369,7 @@ private:
 
   /// Emit braced list of values surrounded by `{` and `}`.
   void emitBracedList(ValueRange ops) {
-    return emitBracedList(
-        ops, [&]() { ps << "{"; }, [&]() { ps << "}"; });
+    return emitBracedList(ops, [&]() { ps << "{"; }, [&]() { ps << "}"; });
   }
 
   /// Print an APInt constant.
@@ -2461,10 +2460,7 @@ private:
     return emitBinary(op, Addition, "+");
   }
   SubExprInfo visitComb(SubOp op) { return emitBinary(op, Addition, "-"); }
-  SubExprInfo visitComb(MulOp op) {
-    assert(op.getNumOperands() == 2 && "prelowering should handle variadics");
-    return emitBinary(op, Multiply, "*");
-  }
+  SubExprInfo visitComb(MulOp op);
   SubExprInfo visitComb(DivUOp op) {
     return emitBinary(op, Multiply, "/", EB_RequireUnsignedOperands);
   }
@@ -3409,6 +3405,59 @@ SubExprInfo ExprEmitter::visitComb(MuxOp op) {
 
     return {Conditional, signedness};
   });
+}
+
+/// If `value` is the sign extension `{n{s}, rest...}` of a narrower value,
+/// the bits of that value, most significant first: `rest` alone if its sign
+/// bit is `s`, or `s, rest...`.
+static SmallVector<Value> getSignExtended(Value value) {
+  auto concat = value.getDefiningOp<ConcatOp>();
+  if (!concat || concat.getNumOperands() < 2)
+    return {};
+  auto replicate = concat.getOperand(0).getDefiningOp<ReplicateOp>();
+  if (!replicate || replicate.getInput().getType().getIntOrFloatBitWidth() != 1)
+    return {};
+  Value sign = replicate.getInput();
+  auto rest = concat.getInputs().drop_front();
+  if (rest.front() == sign)
+    return SmallVector<Value>(rest);
+  if (auto extract = sign.getDefiningOp<ExtractOp>();
+      extract && rest.size() == 1 && extract.getInput() == rest[0] &&
+      extract.getLowBit() + 1 == rest[0].getType().getIntOrFloatBitWidth())
+    return {rest[0]};
+  SmallVector<Value> bits{sign};
+  bits.append(rest.begin(), rest.end());
+  return bits;
+}
+
+/// A multiplication of sign extensions is the signed multiplication of the
+/// narrower values, at the width of the result. Emitted as such, synthesis
+/// sees the multiplier it is, rather than one of the full width.
+SubExprInfo ExprEmitter::visitComb(MulOp op) {
+  assert(op.getNumOperands() == 2 && "prelowering should handle variadics");
+  auto lhs = getSignExtended(op.getOperand(0));
+  auto rhs = getSignExtended(op.getOperand(1));
+  if (lhs.empty() || rhs.empty() || hasSVAttributes(op))
+    return emitBinary(op, Multiply, "*");
+
+  auto emitSigned = [&](ArrayRef<Value> bits) {
+    if (bits.size() == 1) {
+      emitSubExpr(bits[0], Multiply, RequireSigned);
+      return;
+    }
+    ps << "$signed({" << PP::ibox0;
+    llvm::interleave(
+        bits, [&](Value bit) { emitSubExpr(bit, LowestPrecedence); },
+        [&]() { ps << "," << PP::space; });
+    ps << PP::end << "})";
+  };
+  ps.addAsString(op.getType().getIntOrFloatBitWidth());
+  ps << "'(" << PP::ibox0;
+  emitSigned(lhs);
+  ps << PP::space << "*" << PP::nbsp;
+  emitSigned(rhs);
+  ps << PP::end << ")";
+  return {Selection, IsSigned};
 }
 
 SubExprInfo ExprEmitter::visitComb(ReverseOp op) {
