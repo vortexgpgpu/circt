@@ -61,8 +61,8 @@ hw.module @single_el_mem(in %clk : i1, in %addr : i0, in %data : i8, in %we : i1
 
 // CHECK: %[[clock:.+]] = seq.to_clock %clk
 // CHECK: %msingel = seq.firmem 0, 1, undefined, undefined : <1 x 8, mask 1>
-// CHECK: %[[FALSE:.+]] = hw.constant false
 // CHECK: %[[TRUE:.+]] = hw.constant true
+// CHECK: %[[FALSE:.+]] = hw.constant false
 // CHECK: %[[READ:.+]] = seq.firmem.read_port %msingel[%[[FALSE]]], clock %[[clock]] enable %[[TRUE]]
 // CHECK: %[[FALSE:.+]] = hw.constant false
 // CHECK: seq.firmem.write_port %msingel[%[[FALSE]]] = %data, clock %[[clock]] enable %we
