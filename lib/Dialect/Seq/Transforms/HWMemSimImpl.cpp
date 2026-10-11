@@ -244,6 +244,22 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     Value addr = op.getBody().getArgument(inArg++);
     Value en = op.getBody().getArgument(inArg++);
     Value clock = op.getBody().getArgument(inArg++);
+
+    // Returning the data from before a write to the same address means
+    // reading in the cycle the address arrives and registering the data, as a
+    // read-first block RAM does. The data holds while the port is disabled.
+    if (mem.readUnderWrite == seq::RUW::Old && mem.readLatency > 0) {
+      auto stages = mem.readLatency - 1;
+      en = addPipelineStages(b, moduleNamespace, stages, clock, en,
+                             "R" + Twine(i) + "_en");
+      addr = addPipelineStages(b, moduleNamespace, stages, clock, addr,
+                               "R" + Twine(i) + "_addr");
+      Value rdata = getMemoryRead(b, reg, addr, addMuxPragmas);
+      outputs.push_back(addPipelineStages(b, moduleNamespace, 1, clock, rdata,
+                                          "R" + Twine(i) + "_data", en));
+      continue;
+    }
+
     // Add pipeline stages
     if (readEnableMode == ReadEnableMode::Ignore) {
       for (size_t j = 0, e = mem.readLatency; j != e; ++j) {
@@ -434,18 +450,42 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
       wmaskBits = addPipelineStages(b, moduleNamespace, numStages, clock,
                                     wmaskBits, "W" + Twine(i) + "mask");
 
-    SmallVector<Value, 4> maskValues(maskBits);
-    SmallVector<Value, 4> dataValues(maskBits);
-    // For multi-bit mask, extract corresponding write data bits of
-    // mask-granularity size each. Each of the extracted data bits will be
-    // written to a register, gaurded by the corresponding mask bit.
-    for (size_t i = 0; i < maskBits; ++i) {
-      maskValues[i] = b.createOrFold<comb::ExtractOp>(wmaskBits, i, 1);
-      dataValues[i] = b.createOrFold<comb::ExtractOp>(wdataIn, i * mem.maskGran,
-                                                      mem.maskGran);
+    SmallVector<Value, 4> maskValues, dataValues;
+    if (!isMasked) {
+      maskValues.push_back(b.createOrFold<comb::ExtractOp>(wmaskBits, 0, 1));
+      dataValues.push_back(wdataIn);
     }
     // Build write port logic.
     auto writeLogic = [&] {
+      // A masked write is a loop over the mask bits, which synthesis tools
+      // recognize as a byte-enable write: Vivado does not map one statement
+      // per mask bit to block RAM.
+      if (isMasked) {
+        auto indexType = b.getIntegerType(llvm::Log2_64_Ceil(maskBits + 1));
+        auto baseType = b.getIntegerType(llvm::Log2_64_Ceil(mem.dataWidth + 1));
+        sv::ForOp::create(
+            b, 0, maskBits, 1, indexType, "i", [&](BlockArgument index) {
+              Value wide = b.createOrFold<comb::ConcatOp>(
+                  ConstantOp::create(b, APInt::getZero(baseType.getWidth() -
+                                                       indexType.getWidth())),
+                  index);
+              Value base = b.createOrFold<comb::MulOp>(
+                  wide, ConstantOp::create(b, baseType, mem.maskGran), false);
+              Value wmask =
+                  b.createOrFold<sv::IndexedPartSelectOp>(wmaskBits, index, 1);
+              auto wcond = b.createOrFold<comb::AndOp>(en, wmask, false);
+              sv::IfOp::create(b, wcond, [&]() {
+                auto slot = sv::ArrayIndexInOutOp::create(b, reg, addr);
+                sv::PAssignOp::create(
+                    b,
+                    b.createOrFold<sv::IndexedPartSelectInOutOp>(slot, base,
+                                                                 mem.maskGran),
+                    b.createOrFold<sv::IndexedPartSelectOp>(wdataIn, base,
+                                                            mem.maskGran));
+              });
+            });
+        return;
+      }
       // For each register, create the connections to write the corresponding
       // data into it.
       for (auto wmask : llvm::enumerate(maskValues)) {

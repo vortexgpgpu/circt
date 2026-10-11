@@ -220,21 +220,17 @@ hw.module.generated @FIRRTLMemTwoAlways, @FIRRTLMem( in %wo_addr_0: i4, in %wo_e
   // ZERO:         %[[v12:.+]] = sv.read_inout %[[slot]]
   // ZERO:         %[[zero_i32:.+]] = hw.constant 0 : i32
   // ZERO-NEXT:    %[[v13:.+]] = comb.mux %[[v1:.+]], %[[v12]], %[[zero_i32]] : i32
-  // CHECK-NEXT:   %[[v14:.+]] = comb.extract %W0_mask from 0 : (i4) -> i1
-  // CHECK-NEXT:   %[[v15:.+]] = comb.extract %W0_data from 0 : (i32) -> i8
-  // CHECK-NEXT:   %[[v16:.+]] = comb.extract %W0_mask from 1 : (i4) -> i1
-  // CHECK-NEXT:   %[[v17:.+]] = comb.extract %W0_data from 8 : (i32) -> i8
-  // CHECK-NEXT:   %[[v18:.+]] = comb.extract %W0_mask from 2 : (i4) -> i1
-  // CHECK-NEXT:   %[[v19:.+]] = comb.extract %W0_data from 16 : (i32) -> i8
-  // CHECK-NEXT:   %[[v20:.+]] = comb.extract %W0_mask from 3 : (i4) -> i1
-  // CHECK-NEXT:   %[[v21:.+]] = comb.extract %W0_data from 24 : (i32) -> i8
+  // A masked write is a loop over the mask bits.
   // CHECK-NEXT:   sv.always posedge %W0_clk {
-  // CHECK-NEXT:     %[[v22:.+]] = comb.and %W0_en, %[[v14]] : i1
-  // CHECK-NEXT:     sv.if %[[v22]]  {
-  // CHECK-NEXT:       %[[v26:.+]] = sv.array_index_inout %[[Memory]][%W0_addr] : !hw.inout<uarray<16xi32>>, i4
-  // CHECK-NEXT:      %[[c0_i32:.+]] = hw.constant 0 : i32
-  // CHECK-NEXT:      %[[v220:.+]] = sv.indexed_part_select_inout %[[v26]][%[[c0_i32]] : 8] : !hw.inout<i32>, i32
-  // CHECK-NEXT:      sv.passign %[[v220]], %[[v15]] : i8
+  // CHECK:          sv.for %i = {{%.+}} to {{%.+}} step {{%.+}} : i3 {
+  // CHECK:            %[[base:.+]] = comb.mul {{%.+}}, %c8_i6 : i6
+  // CHECK-NEXT:       %[[bit:.+]] = sv.indexed_part_select %W0_mask[%i : 1] : i4, i3
+  // CHECK-NEXT:       %[[cond:.+]] = comb.and %W0_en, %[[bit]] : i1
+  // CHECK-NEXT:       sv.if %[[cond]] {
+  // CHECK-NEXT:         %[[v26:.+]] = sv.array_index_inout %[[Memory]][%W0_addr] : !hw.inout<uarray<16xi32>>, i4
+  // CHECK-NEXT:         %[[col:.+]] = sv.indexed_part_select_inout %[[v26]][%[[base]] : 8] : !hw.inout<i32>, i6
+  // CHECK-NEXT:         %[[data:.+]] = sv.indexed_part_select %W0_data[%[[base]] : 8] : i32, i6
+  // CHECK-NEXT:         sv.passign %[[col]], %[[data]] : i8
 
   // IGNORE:      %[[Memory:.+]] = sv.reg : !hw.inout<uarray<16xi32>>
   // IGNORE-NEXT: %[[read_addr_inout:.+]] = sv.reg {{.*}} : !hw.inout<i4>
@@ -273,17 +269,16 @@ hw.module.generated @FIRRTLMemTwoAlways, @FIRRTLMem( in %wo_addr_0: i4, in %wo_e
   // CHECK:  }
   // CHECK:  %[[v25:.+]] = sv.read_inout %[[v24]] : !hw.inout<i32>
   // CHECK:  %[[v29:.+]] = sv.read_inout %[[v28]] : !hw.inout<i2>
-  // CHECK:  %[[v30:.+]] = comb.extract %[[v29]] from 0 : (i2) -> i1
-  // CHECK:  %[[v31:.+]] = comb.extract %[[v25]] from 0 : (i32) -> i16
-  // CHECK:  %[[v32:.+]] = comb.extract %[[v29]] from 1 : (i2) -> i1
-  // CHECK:  %[[v33:.+]] = comb.extract %[[v25]] from 16 : (i32) -> i16
   // CHECK:  sv.always posedge %W0_clk {
-  // CHECK:    %[[v34:.+]] = comb.and %[[v21:.+]], %[[v30]] : i1
-  // CHECK:    sv.if %[[v34]]  {
-  // CHECK:      %[[v36:.+]] = sv.array_index_inout %[[Memory0]][%[[v117:.+]]] :
-  // CHECK:      %c0_i32 = hw.constant 0 : i32
-  // CHECK:      %[[v37:.+]] = sv.indexed_part_select_inout %[[v36]][%c0_i32 : 16] : !hw.inout<i32>, i32
-  // CHECK:      sv.passign %[[v37]], %[[v31]] : i16
+  // CHECK:    sv.for %i = {{%.+}} to {{%.+}} step {{%.+}} : i2 {
+  // CHECK:      %[[base:.+]] = comb.mul {{%.+}}, %c16_i6 : i6
+  // CHECK-NEXT: %[[bit:.+]] = sv.indexed_part_select %[[v29]][%i : 1] : i2, i2
+  // CHECK-NEXT: %[[cond:.+]] = comb.and %[[v21:.+]], %[[bit]] : i1
+  // CHECK-NEXT: sv.if %[[cond]] {
+  // CHECK-NEXT:   %[[v36:.+]] = sv.array_index_inout %[[Memory0]][%[[v117:.+]]] :
+  // CHECK-NEXT:   %[[v37:.+]] = sv.indexed_part_select_inout %[[v36]][%[[base]] : 16] : !hw.inout<i32>, i6
+  // CHECK-NEXT:   %[[v31:.+]] = sv.indexed_part_select %[[v25]][%[[base]] : 16] : i32, i6
+  // CHECK-NEXT:   sv.passign %[[v37]], %[[v31]] : i16
   // CHECK:    }
   // CHECK:  hw.output %[[v13]] : i32
   // CHECK:}
@@ -314,22 +309,16 @@ numReadPorts = 1 : ui32, numReadWritePorts = 1 : ui32,maskGran = 8 :ui32, numWri
 // CHECK:      sv.passign %[[v70:.+]], %wo_data_0 : i16
 // CHECK:      sv.passign %[[v76:.+]], %wo_mask_0 : i2
 // CHECK:    }
-// CHECK:    %[[v82:.+]] = comb.extract %[[v81:.+]] from 0 : (i2) -> i1
-// CHECK:    %[[v83:.+]] = comb.extract %[[v75:.+]] from 0 : (i16) -> i8
-// CHECK:    %[[v84:.+]] = comb.extract %[[v81]] from 1 : (i2) -> i1
-// CHECK:    %[[v85:.+]] = comb.extract %[[v75]] from 8 : (i16) -> i8
 // CHECK:    sv.always posedge %wo_clock_0 {
-// CHECK:      %[[v86:.+]] = comb.and %[[v69:.+]], %[[v82]] : i1
-// CHECK:      sv.if %[[v86]]  {
-// CHECK:        %[[v88:.+]] = sv.array_index_inout %[[Memory0]][%[[v63:.+]]] :
-// CHECK:        %[[vv83:.+]] = sv.indexed_part_select_inout %[[v88]][%[[c0_i32:.+]] : 8] : !hw.inout<i16>, i32
-// CHECK:        sv.passign %[[vv83]], %[[v83]] : i8
-// CHECK:      }
-// CHECK:      sv.if %[[v87:.+]]  {
-// CHECK:        %[[v88:.+]] = sv.array_index_inout %[[Memory0]][%[[v63]]] : !hw.inout<uarray<10xi16>>, i4
-// CHECK:        %[[c8_i32:.+]] = hw.constant 8 : i32
-// CHECK:        %[[vv83:.+]] = sv.indexed_part_select_inout %[[v88]][%[[c8_i32]] : 8] : !hw.inout<i16>, i32
-// CHECK:        sv.passign %[[vv83]], %[[v85]] : i8
+// CHECK:      sv.for %i = {{%.+}} to {{%.+}} step {{%.+}} : i2 {
+// CHECK:        %[[base:.+]] = comb.mul {{%.+}}, %c8_i5 : i5
+// CHECK-NEXT:   %[[bit:.+]] = sv.indexed_part_select %[[v81:.+]][%i : 1] : i2, i2
+// CHECK-NEXT:   %[[cond:.+]] = comb.and %[[v69:.+]], %[[bit]] : i1
+// CHECK-NEXT:   sv.if %[[cond]] {
+// CHECK-NEXT:     %[[v88:.+]] = sv.array_index_inout %[[Memory0]][%[[v63:.+]]] : !hw.inout<uarray<10xi16>>, i4
+// CHECK-NEXT:     %[[col:.+]] = sv.indexed_part_select_inout %[[v88]][%[[base]] : 8] : !hw.inout<i16>, i5
+// CHECK-NEXT:     %[[data:.+]] = sv.indexed_part_select %[[v75:.+]][%[[base]] : 8] : i16, i5
+// CHECK-NEXT:     sv.passign %[[col]], %[[data]] : i8
 // CHECK:      }
 // CHECK:    }
 
