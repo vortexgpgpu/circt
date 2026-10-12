@@ -58,3 +58,17 @@ hw.module @Counter(in %clk : !seq.clock, in %rst : i1, out q : i4) {
   %r = seq.firreg %sum clock %clk reset sync %rst, %c0_i4 : i4
   hw.output %r : i4
 }
+
+// A cycle between words, though not between bits: bit 0 of %w comes from bit 1
+// of %w. The analysis must end, and find the register's constant bit.
+// CHECK-LABEL: hw.module @WordCycle
+// CHECK:         %r = seq.firreg %{{.+}} clock %clk : i1
+hw.module @WordCycle(in %clk : !seq.clock, in %a : i1, out o : i2) {
+  %false = hw.constant false
+  %hi = comb.extract %w from 1 : (i2) -> i1
+  %w = comb.concat %a, %hi : i1, i1
+  %next = comb.concat %false, %a : i1, i1
+  %r = seq.firreg %next clock %clk : i2
+  %o = comb.xor %r, %w : i2
+  hw.output %o : i2
+}

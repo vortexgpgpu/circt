@@ -137,8 +137,15 @@ const Bits &Analysis::get(Value value) {
       return it->second;
   if (auto it = cache.find(value); it != cache.end())
     return *it->second;
-  auto bits = std::make_unique<Bits>(compute(value));
-  return *(cache[value] = std::move(bits));
+  // A value whose bits depend on other bits of itself, a cycle of the logic
+  // between words though not between bits, reads as varying while it is
+  // computed: the conservative answer, where recursing would not end.
+  auto width = std::max<int64_t>(hw::getBitWidth(value.getType()), 0);
+  auto &slot = cache[value];
+  slot = std::make_unique<Bits>(width, Bit::Varying);
+  auto *bits = slot.get();
+  *bits = compute(value);
+  return *bits;
 }
 
 Bits Analysis::compute(Value value) {
