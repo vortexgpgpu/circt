@@ -21,6 +21,7 @@
 #include "circt/Dialect/Seq/SeqAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqPasses.h"
+#include "circt/Support/LoweringOptions.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -49,6 +50,7 @@ class HWMemSimImpl {
   bool disableMemRandomization;
   bool disableRegRandomization;
   bool addVivadoRAMAddressConflictSynthesisBugWorkaround;
+  bool unrollMaskedWrites;
 
   SmallVector<sv::RegOp> registers;
 
@@ -64,12 +66,13 @@ public:
   HWMemSimImpl(ReadEnableMode readEnableMode, bool addMuxPragmas,
                bool disableMemRandomization, bool disableRegRandomization,
                bool addVivadoRAMAddressConflictSynthesisBugWorkaround,
-               Namespace &mlirModuleNamespace)
+               bool unrollMaskedWrites, Namespace &mlirModuleNamespace)
       : readEnableMode(readEnableMode), addMuxPragmas(addMuxPragmas),
         disableMemRandomization(disableMemRandomization),
         disableRegRandomization(disableRegRandomization),
         addVivadoRAMAddressConflictSynthesisBugWorkaround(
             addVivadoRAMAddressConflictSynthesisBugWorkaround),
+        unrollMaskedWrites(unrollMaskedWrites),
         mlirModuleNamespace(mlirModuleNamespace) {}
 
   void generateMemory(HWModuleOp op, FirMemory mem, ArrayAttr svAttributes);
@@ -454,13 +457,20 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     if (!isMasked) {
       maskValues.push_back(b.createOrFold<comb::ExtractOp>(wmaskBits, 0, 1));
       dataValues.push_back(wdataIn);
+    } else if (unrollMaskedWrites) {
+      for (size_t i = 0; i < maskBits; ++i) {
+        maskValues.push_back(b.createOrFold<comb::ExtractOp>(wmaskBits, i, 1));
+        dataValues.push_back(b.createOrFold<comb::ExtractOp>(
+            wdataIn, i * mem.maskGran, mem.maskGran));
+      }
     }
     // Build write port logic.
     auto writeLogic = [&] {
       // A masked write is a loop over the mask bits, which synthesis tools
       // recognize as a byte-enable write: Vivado does not map one statement
-      // per mask bit to block RAM.
-      if (isMasked) {
+      // per mask bit to block RAM. The loop needs a local variable; without
+      // them, it is one statement per mask bit.
+      if (isMasked && !unrollMaskedWrites) {
         auto indexType = b.getIntegerType(llvm::Log2_64_Ceil(maskBits + 1));
         auto baseType = b.getIntegerType(llvm::Log2_64_Ceil(mem.dataWidth + 1));
         sv::ForOp::create(
@@ -818,6 +828,7 @@ void HWMemSimImplPass::runOnOperation() {
         HWMemSimImpl(readEnableMode, addMuxPragmas, disableMemRandomization,
                      disableRegRandomization,
                      addVivadoRAMAddressConflictSynthesisBugWorkaround,
+                     LoweringOptions(topModule).disallowLocalVariables,
                      mlirModuleNamespace)
             .generateMemory(newModule, mem, sv::getSVAttributes(oldModule));
         if (auto fragments = oldModule->getAttr(emit::getFragmentsAttrName()))
