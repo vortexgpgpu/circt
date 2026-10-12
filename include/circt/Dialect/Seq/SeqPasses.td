@@ -127,6 +127,19 @@ def RegOfVecToMem : Pass<"seq-reg-of-vec-to-mem", "hw::HWModuleOp"> {
   }];
 }
 
+def LowerAggregateRegs : Pass<"seq-lower-aggregate-regs", "hw::HWModuleOp"> {
+  let summary = "Keep the value of an aggregate register as an integer";
+  let description = [{
+    Replaces each `seq.firreg` of an array or struct type with a register of
+    an integer of the same bits, bitcast from the next value and to the
+    register's uses, its reset and preset values bitcast alike. Aggregate
+    operations on the value can then be lowered to bit extracts and
+    concatenations (`hw-convert-bitcasts`, `hw-aggregate-to-comb`), as for a
+    Verilog-2005 emitter that has no packed arrays or structs.
+  }];
+  let dependentDialects = ["circt::hw::HWDialect"];
+}
+
 def RegConstProp : Pass<"seq-reg-const-prop", "hw::HWModuleOp"> {
   let summary = "Replace the register bits that only hold one constant";
   let description = [{

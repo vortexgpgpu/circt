@@ -355,6 +355,63 @@ struct HWStructExtractOpConversion : OpConversionPattern<hw::StructExtractOp> {
   }
 };
 
+/// The bit offset and width of each field of a struct: the first field
+/// occupies the MSBs.
+static SmallVector<std::pair<int64_t, int64_t>>
+getStructFieldBits(hw::StructType structType) {
+  SmallVector<std::pair<int64_t, int64_t>> bits;
+  int64_t offset = hw::getBitWidth(structType);
+  for (auto &element : structType.getElements()) {
+    int64_t width = hw::getBitWidth(element.type);
+    offset -= width;
+    bits.push_back({offset, width});
+  }
+  return bits;
+}
+
+struct HWStructExplodeOpConversion : OpConversionPattern<hw::StructExplodeOp> {
+  using OpConversionPattern<hw::StructExplodeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(hw::StructExplodeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto structType = cast<hw::StructType>(op.getInput().getType());
+    if (hw::getBitWidth(structType) < 0)
+      return rewriter.notifyMatchFailure(op.getLoc(), "unknown struct width");
+    SmallVector<Value> fields;
+    for (auto [offset, width] : getStructFieldBits(structType))
+      fields.push_back(rewriter.createOrFold<comb::ExtractOp>(
+          op.getLoc(), adaptor.getInput(), offset, width));
+    rewriter.replaceOp(op, fields);
+    return success();
+  }
+};
+
+struct HWStructInjectOpConversion : OpConversionPattern<hw::StructInjectOp> {
+  using OpConversionPattern<hw::StructInjectOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(hw::StructInjectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto structType = cast<hw::StructType>(op.getInput().getType());
+    if (hw::getBitWidth(structType) < 0)
+      return rewriter.notifyMatchFailure(op.getLoc(), "unknown struct width");
+    // The other fields' bits from the input, the injected field's from the
+    // new value, the first field the most significant.
+    SmallVector<Value> parts;
+    for (auto [index, bits] : llvm::enumerate(getStructFieldBits(structType))) {
+      if (index == op.getFieldIndex()) {
+        parts.push_back(adaptor.getNewValue());
+        continue;
+      }
+      parts.push_back(rewriter.createOrFold<comb::ExtractOp>(
+          op.getLoc(), adaptor.getInput(), bits.first, bits.second));
+    }
+    rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, parts);
+    return success();
+  }
+};
+
 struct BitcastOpConversion : OpConversionPattern<hw::BitcastOp> {
   using OpConversionPattern<hw::BitcastOp>::OpConversionPattern;
   // Recreate bitcast with legalized types.
@@ -448,7 +505,8 @@ static void populateHWAggregateToCombOpConversionPatterns(
       HWArrayCreateLikeOpConversion<hw::ArrayConcatOp>,
       HWAggregateConstantOpConversion, HWArraySliceOpConversion,
       HWArrayInjectOpConversion, HWStructCreateOpConversion,
-      HWStructExtractOpConversion, HWUnionCreateOpConversion,
+      HWStructExtractOpConversion, HWStructExplodeOpConversion,
+      HWStructInjectOpConversion, HWUnionCreateOpConversion,
       HWUnionExtractOpConversion, BitcastOpConversion, MuxOpConversion>(
       typeConverter, patterns.getContext());
 }
@@ -467,6 +525,7 @@ void HWAggregateToCombPass::runOnOperation() {
   target.addIllegalOp<hw::ArrayGetOp, hw::ArrayCreateOp, hw::ArrayConcatOp,
                       hw::AggregateConstantOp, hw::ArrayInjectOp,
                       hw::ArraySliceOp, hw::StructCreateOp, hw::StructExtractOp,
+                      hw::StructExplodeOp, hw::StructInjectOp,
                       hw::UnionCreateOp, hw::UnionExtractOp>();
   target.addLegalDialect<hw::HWDialect, comb::CombDialect>();
 

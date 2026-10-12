@@ -109,6 +109,19 @@ def VerifyInnerRefNamespace : Pass<"hw-verify-irn"> {
   let summary = "Verify InnerRefNamespaceLike operations, if not self-verifying.";
 }
 
+def HWAggregatePortsToInt : Pass<"hw-aggregate-ports-to-int",
+                                  "mlir::ModuleOp"> {
+  let summary = "Give array and struct ports integer types of the same bits";
+  let description = [{
+    Each port of a module or external module whose type is an array or a
+    struct takes an integer type of the same bits instead: a module bitcasts
+    its inputs to their former types and its outputs from them, and each
+    instance bitcasts its operands and results likewise. With
+    `hw-aggregate-to-comb`, this leaves a design no packed array or struct,
+    as a Verilog-2005 emitter needs.
+  }];
+}
+
 def HWAggregateToComb : Pass<"hw-aggregate-to-comb", "hw::HWModuleOp"> {
   let summary = "Lower aggregate operations to comb operations";
   let description = [{

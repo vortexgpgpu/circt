@@ -310,3 +310,18 @@ hw.module private @union_array(in %arr: !hw.array<2x!hw.union<a: i4, b: i2 offse
   %b = hw.union_extract %e["b"] : !hw.union<a: i4, b: i2 offset 1>
   hw.output %b : i2
 }
+
+// CHECK-LABEL: @struct_explode_inject
+// The first field occupies the most significant bits.
+hw.module @struct_explode_inject(in %s : !hw.struct<a: i8, b: i4>, in %v : i4, out a : i8, out b : i4, out c : !hw.struct<a: i8, b: i4>) {
+  // CHECK: %[[S:.+]] = hw.bitcast %s : (!hw.struct<a: i8, b: i4>) -> i12
+  // CHECK-DAG: %[[A:.+]] = comb.extract %[[S]] from 4 : (i12) -> i8
+  // CHECK-DAG: %[[B:.+]] = comb.extract %[[S]] from 0 : (i12) -> i4
+  // CHECK-DAG: %[[A2:.+]] = comb.extract %[[S]] from 4 : (i12) -> i8
+  // CHECK: %[[C:.+]] = comb.concat %[[A2]], %v : i8, i4
+  // CHECK: %[[CS:.+]] = hw.bitcast %[[C]] : (i12) -> !hw.struct<a: i8, b: i4>
+  // CHECK: hw.output %[[A]], %[[B]], %[[CS]]
+  %a, %b = hw.struct_explode %s : !hw.struct<a: i8, b: i4>
+  %c = hw.struct_inject %s["b"], %v : !hw.struct<a: i8, b: i4>
+  hw.output %a, %b, %c : i8, i4, !hw.struct<a: i8, b: i4>
+}
