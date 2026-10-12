@@ -402,6 +402,27 @@ struct SVModuleOpConversion : public OpConversionPattern<SVModuleOp> {
     if (failed(portInfo))
       return failure();
 
+    // A black box is an external module under its source name, which takes
+    // the parameter values its specialization was elaborated with.
+    if (auto name = op->getAttrOfType<StringAttr>("moore.blackbox")) {
+      // The external module declares the parameters without values, so that
+      // every instance spells its values out.
+      SmallVector<Attribute> decls;
+      if (auto params =
+              op->getAttrOfType<ArrayAttr>("moore.blackbox_parameters"))
+        for (auto param : params.getAsRange<hw::ParamDeclAttr>())
+          decls.push_back(
+              hw::ParamDeclAttr::get(param.getName(), param.getType()));
+      auto extern_ = hw::HWModuleExternOp::create(
+          rewriter, op.getLoc(), op.getSymNameAttr(), *portInfo,
+          name.getValue(), rewriter.getArrayAttr(decls));
+      // Its instances may be converted after it.
+      if (auto params = op->getAttr("moore.blackbox_parameters"))
+        extern_->setAttr("moore.blackbox_parameters", params);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     auto hwModuleOp = hw::HWModuleOp::create(rewriter, op.getLoc(),
                                              op.getSymNameAttr(), *portInfo);
     if (auto svAttrs = sv::getSVAttributes(op))
@@ -443,12 +464,20 @@ struct InstanceOpConversion : public OpConversionPattern<InstanceOp> {
     auto instName = op.getInstanceNameAttr();
     auto moduleName = op.getModuleNameAttr();
 
+    // An instance of a black box passes it its parameter values.
+    ArrayAttr params = rewriter.getArrayAttr({});
+    auto *target = SymbolTable::lookupNearestSymbolFrom(op, moduleName);
+    if (target)
+      if (auto attr =
+              target->getAttrOfType<ArrayAttr>("moore.blackbox_parameters"))
+        params = attr;
+
     // Create the new hw instanceOp to replace the original one.
     rewriter.setInsertionPoint(op);
     auto instOp = hw::InstanceOp::create(
         rewriter, op.getLoc(), op.getResultTypes(), instName, moduleName,
-        op.getInputs(), op.getInputNamesAttr(), op.getOutputNamesAttr(),
-        /*Parameter*/ rewriter.getArrayAttr({}), /*InnerSymbol*/ nullptr,
+        op.getInputs(), op.getInputNamesAttr(), op.getOutputNamesAttr(), params,
+        /*InnerSymbol*/ nullptr,
         /*doNotPrint*/ nullptr);
 
     // Replace uses chain and erase the original op.
@@ -2171,9 +2200,8 @@ struct HWInstanceOpConversion : public OpConversionPattern<hw::InstanceOp> {
 
     rewriter.replaceOpWithNewOp<hw::InstanceOp>(
         op, convResTypes, op.getInstanceName(), op.getModuleName(),
-        adaptor.getOperands(), op.getArgNames(),
-        op.getResultNames(), /*Parameter*/
-        rewriter.getArrayAttr({}), /*InnerSymbol*/ nullptr);
+        adaptor.getOperands(), op.getArgNames(), op.getResultNames(),
+        op.getParameters(), /*InnerSymbol*/ nullptr);
 
     return success();
   }

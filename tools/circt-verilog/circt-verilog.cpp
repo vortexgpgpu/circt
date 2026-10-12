@@ -262,6 +262,12 @@ struct CLOptions {
                "interface, and programs."),
       cl::init(false), cl::cat(cat)};
 
+  cl::list<std::string> blackboxModules{
+      "blackbox",
+      cl::desc("Import a module as a black box: its ports, with each instance "
+               "given the module's parameter values, but not its contents"),
+      cl::value_desc("module"), cl::cat(cat)};
+
   cl::list<std::string> topModules{
       "top",
       cl::desc("One or more top-level modules to instantiate (instead of "
@@ -399,6 +405,7 @@ static LogicalResult executeWithSources(MLIRContext *context,
   options.allowUseBeforeDeclare = opts.allowUseBeforeDeclare;
   options.allowHierarchicalConst = opts.allowHierarchicalConst;
   options.ignoreUnknownModules = opts.ignoreUnknownModules;
+  options.blackboxModules = opts.blackboxModules;
   options.ignoreUninstantiatedModules = opts.ignoreUninstantiatedModules;
   if (opts.loweringMode != LoweringMode::OnlyLint)
     options.topModules = opts.topModules;

@@ -1664,6 +1664,58 @@ Context::convertModuleHeader(const slang::ast::InstanceBodySymbol *module) {
   // name as we'd expect.
   symbolTable.insert(moduleOp);
 
+  // A black box keeps its ports and the parameter values of this
+  // specialization, for its instances; its outputs are left at zero, as
+  // MooreToCore makes it an external module.
+  auto defName = module->getDefinition().name;
+  if (llvm::is_contained(options.blackboxModules,
+                         std::string(defName.data(), defName.size()))) {
+    SmallVector<Attribute> params;
+    for (const auto *base : module->getParameters()) {
+      const auto *param = base->symbol.as_if<ParameterSymbol>();
+      if (!param || param->isLocalParam())
+        continue;
+      const auto &value = param->getValue();
+      if (!value.isInteger() || value.integer().hasUnknown()) {
+        mlir::emitError(loc) << "black box parameter `" << param->name
+                             << "` is not a known integer";
+        return {};
+      }
+      const auto &svint = value.integer();
+      APInt bits(svint.getBitWidth(),
+                 ArrayRef<uint64_t>(svint.getRawPtr(), svint.getNumWords()));
+      params.push_back(hw::ParamDeclAttr::get(
+          builder.getStringAttr(std::string_view(param->name)),
+          builder.getIntegerAttr(builder.getIntegerType(bits.getBitWidth()),
+                                 bits)));
+    }
+    moduleOp->setAttr("moore.blackbox",
+                      builder.getStringAttr(std::string_view(defName)));
+    moduleOp->setAttr("moore.blackbox_parameters",
+                      builder.getArrayAttr(params));
+    OpBuilder::InsertionGuard bodyGuard(builder);
+    builder.setInsertionPointToEnd(moduleOp.getBody());
+    SmallVector<Value> outputs;
+    for (auto &port : modulePorts) {
+      if (port.dir != hw::ModulePort::Direction::Output)
+        continue;
+      auto type = dyn_cast<moore::UnpackedType>(port.type);
+      auto width = type ? type.getBitSize() : std::nullopt;
+      if (!width) {
+        mlir::emitError(loc) << "black box output `" << port.name.getValue()
+                             << "` has no fixed width";
+        return {};
+      }
+      Value zero = moore::ConstantOp::create(
+          builder, loc, moore::IntType::getInt(getContext(), *width), 0);
+      outputs.push_back(materializeConversion(port.type, zero, false, loc));
+      if (!outputs.back())
+        return {};
+    }
+    moore::OutputOp::create(builder, loc, outputs);
+    return &lowering;
+  }
+
   // Schedule the body to be lowered.
   moduleWorklist.push(module);
 

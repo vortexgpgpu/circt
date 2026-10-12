@@ -117,6 +117,12 @@ struct ImportVerilogOptions {
   /// If true, ignore errors about unknown modules.
   std::optional<bool> ignoreUnknownModules;
 
+  /// Modules imported as black boxes: their ports, not their contents. Each
+  /// specialization becomes an `hw.module.extern` under the module's own name,
+  /// its instances given the parameter values slang elaborated, so that a tool
+  /// downstream can bind the module itself (an SRAM macro, a vendor cell).
+  std::vector<std::string> blackboxModules;
+
   /// If true, do not elaborate modules that are not instantiated in the design
   /// for semantic checking. Their bodies are neither checked nor lowered.
   std::optional<bool> ignoreUninstantiatedModules;
