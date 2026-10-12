@@ -426,3 +426,24 @@ hw.module @UnionConflict(in %u : i42, in %v : i1337) {
 }
 
 func.func private @useSigI42(%arg0: !llhd.ref<i42>)
+
+// A signal without an initial value may hold any value where it is never
+// driven: the gap of the nested field `b.y` is filled with zero.
+// CHECK-LABEL: @GapWithoutInit
+hw.module @GapWithoutInit(in %u: i4, in %v: i2) {
+  %0 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.sig
+  %s = llhd.sig : <!hw.struct<a: i4, b: !hw.struct<x: i2, y: i3>>>
+  %a = llhd.sig.struct_extract %s["a"] : <!hw.struct<a: i4, b: !hw.struct<x: i2, y: i3>>>
+  %b = llhd.sig.struct_extract %s["b"] : <!hw.struct<a: i4, b: !hw.struct<x: i2, y: i3>>>
+  %x = llhd.sig.struct_extract %b["x"] : <!hw.struct<x: i2, y: i3>>
+  // CHECK-DAG: [[ZERO:%.+]] = hw.constant 0 : i9
+  // CHECK-DAG: [[INIT:%.+]] = hw.bitcast [[ZERO]] : (i9) -> !hw.struct<a: i4, b: !hw.struct<x: i2, y: i3>>
+  // CHECK-DAG: [[INITB:%.+]] = hw.struct_extract [[INIT]]["b"]
+  // CHECK-DAG: [[Y:%.+]] = hw.struct_extract [[INITB]]["y"]
+  // CHECK-DAG: [[B:%.+]] = hw.struct_create (%v, [[Y]])
+  // CHECK-DAG: [[S:%.+]] = hw.struct_create (%u, [[B]])
+  // CHECK-DAG: llhd.drv %s, [[S]] after
+  llhd.drv %a, %u after %0 : i4
+  llhd.drv %x, %v after %0 : i2
+}

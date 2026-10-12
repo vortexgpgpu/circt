@@ -472,14 +472,27 @@ void ModuleContext::addDefaultDriveSlices(Signal &signal,
   for (auto *s = &signal; s; s = s->parent)
     chain.push_back(s);
   auto signalOp = chain.back()->value.getDefiningOp<SignalOp>();
-  if (!signalOp || !signalOp.getInit())
+  if (!signalOp)
     return;
 
   // Create drives with the default value for the gaps we've filled in.
   ImplicitLocOpBuilder builder(signal.value.getLoc(),
                                signal.value.getContext());
   builder.setInsertionPointAfterValue(signal.value);
+  // A signal without an initial value may hold any value where it is never
+  // driven: zero is one.
   Value defaultValue = signalOp.getInit();
+  if (!defaultValue) {
+    auto type = cast<RefType>(signalOp.getType()).getNestedType();
+    auto width = hw::getBitWidth(type);
+    if (width <= 0)
+      return;
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfterValue(signalOp);
+    defaultValue = hw::ConstantOp::create(builder, APInt::getZero(width));
+    if (defaultValue.getType() != type)
+      defaultValue = hw::BitcastOp::create(builder, type, defaultValue);
+  }
   for (auto *s : llvm::drop_begin(llvm::reverse(chain))) {
     auto parentType = defaultValue.getType();
     if (auto arrayType = hw::type_dyn_cast<hw::ArrayType>(parentType)) {
