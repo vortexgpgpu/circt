@@ -4,6 +4,7 @@ add_circt_dialect_library(CIRCTSeqTransforms
   RegOfVecToMem.cpp
   RegConstProp.cpp
   LowerAggregateRegs.cpp
+  RetimeFirMemReads.cpp
   LowerSeqCompRegCE.cpp
   LowerSeqHLMem.cpp
   LowerSeqFIFO.cpp

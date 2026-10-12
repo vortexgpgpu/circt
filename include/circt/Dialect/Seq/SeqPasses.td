@@ -140,6 +140,32 @@ def LowerAggregateRegs : Pass<"seq-lower-aggregate-regs", "hw::HWModuleOp"> {
   let dependentDialects = ["circt::hw::HWDialect"];
 }
 
+def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "hw::HWModuleOp"> {
+  let summary = "Fold the registers of an asynchronous read's address into it";
+  let description = [{
+    A `seq.firmem` whose reads are asynchronous (read latency 0) and whose
+    every read address is computed from registers on the clock of its writes
+    reads the same words a cycle earlier instead: each read becomes a read of
+    latency 1, clocked by that clock, at the address the registers' next
+    values give, and the memory reads its writes' new data (`ruw = new`), as
+    the asynchronous read sees a word written on the edge that also moves the
+    address. Holds and synchronous resets of the registers are part of their
+    next values, so the read is exact on every cycle after the first edge.
+
+    This is what a block RAM needs: FPGA tools map an asynchronous read to
+    distributed RAM, and only a synchronous one to block RAM. Memories with a
+    read-write port, write ports on several clocks, address registers with an
+    asynchronous reset, or reads whose address depends on anything but such
+    registers and constants are left alone, as are memories of fewer than
+    `min-bits` bits.
+  }];
+  let options = [
+    Option<"minBits", "min-bits", "uint64_t", "0",
+           "Leave memories of fewer bits alone">,
+  ];
+  let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect"];
+}
+
 def RegConstProp : Pass<"seq-reg-const-prop", "hw::HWModuleOp"> {
   let summary = "Replace the register bits that only hold one constant";
   let description = [{
