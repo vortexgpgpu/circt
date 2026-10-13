@@ -261,7 +261,10 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
 
     // Returning the data from before a write to the same address means
     // reading in the cycle the address arrives and registering the data, as a
-    // read-first block RAM does. The data holds while the port is disabled.
+    // read-first block RAM does. The data holds while the port is disabled,
+    // which `seq.firmem.read_port` defines: the read enable mode, which
+    // chooses the data of a disabled read where it is undefined, does not
+    // apply.
     if (mem.readUnderWrite == seq::RUW::Old && mem.readLatency > 0) {
       auto stages = mem.readLatency - 1;
       en = addPipelineStages(b, moduleNamespace, stages, clock, en,

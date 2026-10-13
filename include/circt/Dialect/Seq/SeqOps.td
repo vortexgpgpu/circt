@@ -587,6 +587,12 @@ def FirMemReadOp : SeqOp<"firmem.read_port", [
     be read, the clock on which the read is synchronized, and an optional
     enable. Omitting the enable operand has the same effect as passing a
     constant `true` to it.
+
+    The data of a disabled read is undefined, except on a memory with a
+    non-zero read latency and `old` read-under-write behavior: such a port
+    reads the memory in the last cycle of its latency and registers the data,
+    as a read-first block RAM does, and while disabled it holds the data it
+    last read.
   }];
 
   let arguments = (ins

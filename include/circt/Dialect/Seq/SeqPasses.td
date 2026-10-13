@@ -83,7 +83,8 @@ def HWMemSimImpl : Pass<"hw-memory-sim", "ModuleOp"> {
                 "false", "Prepare seq mems for macro replacement">,
     Option<"readEnableMode", "read-enable-mode", "::circt::seq::ReadEnableMode",
            "::circt::seq::ReadEnableMode::Undefined",
-           "specify the behaviour of the read enable signal", [{
+           "specify the behaviour of the read enable signal where the data "
+           "of a disabled read is undefined", [{
               ::llvm::cl::values(
               clEnumValN(::circt::seq::ReadEnableMode::Ignore, "ignore",
                          "Ignore the read enable signal"),

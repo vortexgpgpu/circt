@@ -72,6 +72,24 @@ hw.module @TestROMemoryWithLatency(in %clock: !seq.clock, in %addr: i10, in %ena
 hw.module.generated @ROMemoryWithLatency, @FIRRTLMem(in %R0_addr: i10, in %R0_en: i1, in %R0_clk: !seq.clock, out R0_data: i8) attributes {depth = 1024 : i64, maskGran = 8 : ui32, numReadPorts = 1 : ui32, numReadWritePorts = 0 : ui32, numWritePorts = 0 : ui32, readLatency = 3 : ui32, readUnderWrite = 0 : ui32, width = 8 : ui32, writeClockIDs = [], writeLatency = 1 : ui32, writeUnderWrite = 1 : i32}
 
 
+// A memory returning the old data on a read of the address being written reads
+// the storage in the last cycle of the read latency and registers the data,
+// which holds while the port is disabled.
+// CHECK-LABEL: hw.module @TestReadFirstMemory(
+hw.module @TestReadFirstMemory(in %clock: !seq.clock, in %addr: i10, in %enable: i1, out data: i8) {
+  // CHECK-NEXT: [[FOO:%.+]] = arc.memory <1024 x i8, i10> {name = "foo"}
+  // CHECK-NEXT: [[ADDR:%.+]] = seq.compreg %addr, %clock
+  // CHECK-NEXT: [[EN:%.+]] = seq.compreg %enable, %clock
+  // CHECK-NEXT: [[READ:%.+]] = arc.memory_read_port [[FOO]][[[ADDR]]] : <1024 x i8, i10>
+  // CHECK-NEXT: [[DATA:%.+]] = seq.compreg [[HOLD:%.+]], %clock
+  // CHECK-NEXT: [[HOLD]] = comb.mux [[EN]], [[READ]], [[DATA]] : i8
+  // CHECK-NEXT: hw.output [[DATA]]
+  %0 = hw.instance "foo" @ReadFirstMemory(R0_addr: %addr: i10, R0_en: %enable: i1, R0_clk: %clock: !seq.clock) -> (R0_data: i8)
+  hw.output %0 : i8
+}
+// CHECK-NEXT: }
+hw.module.generated @ReadFirstMemory, @FIRRTLMem(in %R0_addr: i10, in %R0_en: i1, in %R0_clk: !seq.clock, out R0_data: i8) attributes {depth = 1024 : i64, maskGran = 8 : ui32, numReadPorts = 1 : ui32, numReadWritePorts = 0 : ui32, numWritePorts = 0 : ui32, readLatency = 2 : ui32, readUnderWrite = 1 : i32, width = 8 : ui32, writeClockIDs = [], writeLatency = 1 : ui32, writeUnderWrite = 1 : i32}
+
 // CHECK-LABEL: hw.module @TestRWMemory(
 hw.module @TestRWMemory(in %clock: !seq.clock, in %addr: i10, in %enable: i1, in %wmode: i1, in %wdata: i8, out rdata: i8) {
   // CHECK-NOT: hw.instance

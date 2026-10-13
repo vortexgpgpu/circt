@@ -106,6 +106,15 @@ void InferMemoriesPass::runOnOperation() {
     unsigned readPreLatency = readLatency; // cycles before storage is read
     unsigned readPostLatency = 0; // cycles to move read value to output
 
+    // A memory returning the data from before a write to the same address
+    // reads the storage in the cycle before the data is due and registers it,
+    // as a read-first block RAM does. Like `HWMemSimImpl`, its read ports
+    // hold the data while disabled.
+    auto ruwAttr = params.getAs<IntegerAttr>("readUnderWrite");
+    bool readFirst =
+        ruwAttr && readLatency > 0 &&
+        seq::symbolizeRUW(ruwAttr.getValue().getZExtValue()) == seq::RUW::Old;
+
     ImplicitLocOpBuilder builder(instOp.getLoc(), instOp);
     auto wordType = builder.getIntegerType(width);
     auto addressTy = dyn_cast<IntegerType>(instOp.getOperand(0).getType());
@@ -166,6 +175,20 @@ void InferMemoriesPass::runOnOperation() {
         tap(address, "addr");
         tap(enable, "en");
         tap(data, "data");
+      }
+
+      if (readFirst) {
+        address = applyLatency(clock, address, readLatency - 1);
+        enable = applyLatency(clock, enable, readLatency - 1);
+        Value readOp =
+            MemoryReadPortOp::create(builder, wordType, memOp, address);
+        auto dataReg = seq::CompRegOp::create(
+            builder, readOp, clock, builder.getStringAttr(""), Value{}, Value{},
+            Value{}, hw::InnerSymAttr{});
+        dataReg.getInputMutable().assign(
+            comb::MuxOp::create(builder, enable, readOp, dataReg));
+        data.replaceAllUsesWith(dataReg.getResult());
+        continue;
       }
 
       // Apply the latency before the underlying storage is accessed.
