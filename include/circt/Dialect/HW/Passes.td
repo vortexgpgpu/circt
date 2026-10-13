@@ -200,5 +200,26 @@ def HWConvertBitcasts : Pass<"hw-convert-bitcasts", "mlir::ModuleOp"> {
   let dependentDialects = ["comb::CombDialect"];
 }
 
+def HWExpandArrayWrites : Pass<"hw-expand-array-writes", "hw::HWModuleOp"> {
+  let summary = "Expand conditional writes into arrays into per-element selects";
+  let description = [{
+    A conditional write of one element at a dynamic index, `if (c) x[i] = v`,
+    arrives as a mux between the written array and the original one:
+    `mux(c, inject(x, i, v), x)`. This pass rewrites it as an array of
+    per-element selects, `create(mux(c & i == k, v, x[k]) for each k)`, which
+    is what the statement means element by element; a mux of whole arrays
+    costs a second level of selection per element in synthesis.
+
+    It is not a canonicalization: a memory's write port has the same form,
+    and memory detection (`seq-reg-of-vec-to-mem`) must see it first. Run it
+    once memories are detected. Arrays of more than `max-elements` elements
+    are left alone, as is a write whose result is used elsewhere too.
+  }];
+  let options = [
+    Option<"maxElements", "max-elements", "unsigned", "64",
+           "Leave arrays of more elements alone">,
+  ];
+  let dependentDialects = ["comb::CombDialect"];
+}
 
 #endif // CIRCT_DIALECT_HW_PASSES_TD
