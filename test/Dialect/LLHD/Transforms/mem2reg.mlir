@@ -1577,6 +1577,37 @@ hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
   }
 }
 
+// The field slots of several signals are hoisted in the order the region
+// first uses them.
+// CHECK-LABEL: @FieldSlotsInFirstUseOrder
+hw.module @FieldSlotsInFirstUseOrder(in %v : i8, in %u : i8) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK: %z = llhd.sig
+  // CHECK-NEXT: [[Y0:%.+]] = llhd.sig.array_get %y[%false]
+  // CHECK-NEXT: [[X0:%.+]] = llhd.sig.array_get %x[%false]
+  // CHECK-NEXT: [[Z0:%.+]] = llhd.sig.array_get %z[%false]
+  // CHECK-NEXT: llhd.process
+  // CHECK: llhd.drv [[Y0]], %v
+  // CHECK: llhd.drv [[X0]], %u
+  // CHECK: llhd.drv [[Z0]], %u
+  %x = llhd.sig %init : <!hw.array<2xi8>>
+  %y = llhd.sig %init : <!hw.array<2xi8>>
+  %z = llhd.sig %init : <!hw.array<2xi8>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %ey = llhd.sig.array_get %y[%false] : <!hw.array<2xi8>>
+    llhd.drv %ey, %v after %t : i8
+    %ex = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
+    llhd.drv %ex, %u after %t : i8
+    %ez = llhd.sig.array_get %z[%false] : <!hw.array<2xi8>>
+    llhd.drv %ez, %u after %t : i8
+    llhd.wait (%v, %u : i8, i8), ^bb1
+  }
+}
+
 // An element driven as a whole in one block and through bit slices of a
 // separate projection of the same element in another (Vortex VX_serial_mul's
 // `p[i] <= 0` / `p[i][3:0] <= ...`) is still one field slot: the second

@@ -17,6 +17,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/IR/Dominance.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GenericIteratedDominanceFrontier.h"
 #include <map>
@@ -998,8 +999,10 @@ void Promoter::hoistFieldProjections() {
   };
   // The terminal field values: field projections (in or outside the region)
   // that are used by a non-field op inside the region, and direct uses of a
-  // root signal.
-  DenseMap<Value, SmallVector<std::pair<Value, SmallVector<std::string>>>>
+  // root signal. Ordered by first use, as the fields are hoisted in this
+  // order.
+  llvm::MapVector<Value,
+                  SmallVector<std::pair<Value, SmallVector<std::string>>>>
       terminals;
   DenseSet<Value> rejectedRoots;
   // Only signals that the region drives through a field projection are of
