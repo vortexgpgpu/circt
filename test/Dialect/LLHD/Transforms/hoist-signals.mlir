@@ -495,6 +495,24 @@ hw.module @PortDrivesMayAlias(in %a : i8, in %b : i8, in %p : !llhd.ref<i8>, in 
   }
 }
 
+// Another port passed to a call may be bound to the same signal and driven by
+// the callee; the drive stays ordered after the call.
+func.func private @drivePort(%arg0: !llhd.ref<i8>)
+
+// CHECK-LABEL: @PortCallMayAlias
+hw.module @PortCallMayAlias(in %a : i8, in %p : !llhd.ref<i8>, in %q : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.process {
+  // CHECK-NEXT: func.call @drivePort(%q)
+  // CHECK-NEXT: llhd.drv %p, %a
+  // CHECK-NEXT: llhd.halt
+  llhd.process {
+    func.call @drivePort(%q) : (!llhd.ref<i8>) -> ()
+    llhd.drv %p, %a after %t : i8
+    llhd.halt
+  }
+}
+
 // A reference selected by control flow and only probed in the merge block is
 // probed in each predecessor instead, and the probes then leave the process.
 // CHECK-LABEL: @ProbeSelectedReference

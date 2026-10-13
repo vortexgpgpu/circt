@@ -393,14 +393,17 @@ void DriveHoister::findHoistableSlots() {
     auto portArg = dyn_cast<BlockArgument>(slot);
     if (portArg && isa<hw::HWModuleOp>(portArg.getOwner()->getParentOp())) {
       // Another reference port may be bound to the same signal; a signal
-      // declared in the module, or a projection of one, cannot be.
+      // declared in the module, or a projection of one, cannot be. Any op
+      // given another reference, such as a call, may access it.
       bool mayAlias = false;
       processOp->walk([&](Operation *user) {
-        if (!isa<ProbeOp, DriveOp>(user) || user->getOperand(0) == slot)
-          return;
-        Value otherRoot;
-        SmallVector<std::string> otherPath;
-        mayAlias |= !getFieldPath(user->getOperand(0), otherRoot, otherPath);
+        for (auto operand : user->getOperands()) {
+          if (operand == slot || !isa<RefType>(operand.getType()))
+            continue;
+          Value otherRoot;
+          SmallVector<std::string> otherPath;
+          mayAlias |= !getFieldPath(operand, otherRoot, otherPath);
+        }
       });
       if (mayAlias)
         return;
