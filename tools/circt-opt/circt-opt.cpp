@@ -78,6 +78,7 @@ int main(int argc, char **argv) {
   mlir::registerCanonicalizerPass();
   mlir::registerViewOpGraphPass();
   mlir::registerSymbolDCEPass();
+  mlir::registerTopologicalSortPass();
   mlir::registerReconcileUnrealizedCastsPass();
   llvm::cl::AddExtraVersionPrinter(
       [](llvm::raw_ostream &os) { os << circt::getCirctVersion() << '\n'; });
