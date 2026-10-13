@@ -1664,16 +1664,42 @@ Context::convertModuleHeader(const slang::ast::InstanceBodySymbol *module) {
   // name as we'd expect.
   symbolTable.insert(moduleOp);
 
+  // Map duplicate port by Syntax
+  for (const auto &port : lowering.ports)
+    lowering.portsBySyntaxNode.insert({port.ast.getSyntax(), &port.ast});
+
   // A black box keeps its ports and the parameter values of this
   // specialization, for its instances; its outputs are left at zero, as
   // MooreToCore makes it an external module.
   auto defName = module->getDefinition().name;
   if (llvm::is_contained(options.blackboxModules,
                          std::string(defName.data(), defName.size()))) {
+    // Its contents are not imported, so no hierarchical name can pass
+    // through it.
+    for (auto &hierPath : hierPaths[module]) {
+      const auto *sym = hierPath.valueSyms.front().first;
+      mlir::emitError(convertLocation(sym->location))
+          << "hierarchical reference to `" << sym->name
+          << "` through black box `" << defName << "` is not supported";
+      return {};
+    }
     SmallVector<Attribute> params;
     for (const auto *base : module->getParameters()) {
+      if (base->isLocalParam())
+        continue;
+      // Its instances can only pass values: a type parameter must be left at
+      // its default, which the module derives itself.
+      if (const auto *typeParam =
+              base->symbol.as_if<slang::ast::TypeParameterSymbol>()) {
+        if (!typeParam->isOverridden())
+          continue;
+        mlir::emitError(convertLocation(typeParam->location))
+            << "black box type parameter `" << typeParam->name
+            << "` is overridden; only value parameters can be passed";
+        return {};
+      }
       const auto *param = base->symbol.as_if<ParameterSymbol>();
-      if (!param || param->isLocalParam())
+      if (!param)
         continue;
       const auto &value = param->getValue();
       if (!value.isInteger() || value.integer().hasUnknown()) {
@@ -1718,11 +1744,6 @@ Context::convertModuleHeader(const slang::ast::InstanceBodySymbol *module) {
 
   // Schedule the body to be lowered.
   moduleWorklist.push(module);
-
-  // Map duplicate port by Syntax
-  for (const auto &port : lowering.ports)
-    lowering.portsBySyntaxNode.insert({port.ast.getSyntax(), &port.ast});
-
   return &lowering;
 }
 

@@ -4365,5 +4365,9 @@ void MooreToCorePass::runOnOperation() {
   if (failed(applyFullConversion(module, target, std::move(patterns))))
     return signalPassFailure();
 
+  // Black boxes keep their parameter values only for their instances.
+  for (auto extern_ : module.getOps<hw::HWModuleExternOp>())
+    extern_->removeAttr("moore.blackbox_parameters");
+
   restoreUnpackedPorts(module, unpackedPorts);
 }
