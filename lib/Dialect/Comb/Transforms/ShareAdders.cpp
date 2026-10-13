@@ -30,9 +30,11 @@ namespace comb {
 } // namespace comb
 } // namespace circt
 
-/// Whether `-value` is free: `value` is a constant or a mux tree of constants.
+/// Whether `-value` is free: `value` is an integer constant or a mux tree of
+/// them.
 static bool isFreeToNegate(Value value) {
-  if (matchPattern(value, m_Constant()))
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
     return true;
   auto mux = value.getDefiningOp<MuxOp>();
   return mux && isFreeToNegate(mux.getTrueValue()) &&

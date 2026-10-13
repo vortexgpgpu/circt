@@ -59,3 +59,14 @@ hw.module @Used(in %c : i1, in %a : i8, in %b : i8, in %d : i8, out y : i8, out 
   %y = comb.mux %c, %0, %1 : i8
   hw.output %y, %0 : i8, i8
 }
+
+// A parameter value is a constant, but not an integer one to negate.
+// CHECK-LABEL: hw.module @Parameter
+// CHECK:         comb.mux %c, %1, %2
+hw.module @Parameter<W: i8>(in %c : i1, in %a : i8, in %b : i8, out y : i8) {
+  %p = hw.param.value i8 = #hw.param.decl.ref<"W">
+  %0 = comb.add %a, %b : i8
+  %1 = comb.sub %a, %p : i8
+  %y = comb.mux %c, %0, %1 : i8
+  hw.output %y : i8
+}
