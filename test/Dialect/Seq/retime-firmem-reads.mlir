@@ -1,5 +1,9 @@
-// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(seq-retime-firmem-reads))' | FileCheck %s
-// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(seq-retime-firmem-reads{min-bits=65536}))' | FileCheck %s --check-prefix=SMALL
+// RUN: circt-opt %s --pass-pipeline='builtin.module(seq-retime-firmem-reads{mode=auto})' | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(seq-retime-firmem-reads{mode=auto min-bits=65536})' | FileCheck %s --check-prefix=SMALL
+// RUN: circt-opt %s --seq-retime-firmem-reads | FileCheck %s --check-prefix=OFF
+
+// None of these memories has a hint: by default they are left alone.
+// OFF-NOT: seq.firmem 1,
 
 // Three reads at registered addresses: plain, held with a synchronous reset,
 // and logic of two registers. Each reads the next address on the clock; the

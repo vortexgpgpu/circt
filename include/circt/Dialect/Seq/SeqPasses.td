@@ -140,7 +140,7 @@ def LowerAggregateRegs : Pass<"seq-lower-aggregate-regs", "hw::HWModuleOp"> {
   let dependentDialects = ["circt::hw::HWDialect"];
 }
 
-def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "hw::HWModuleOp"> {
+def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "mlir::ModuleOp"> {
   let summary = "Fold the registers of an asynchronous read's address into it";
   let description = [{
     A `seq.firmem` whose reads are asynchronous (read latency 0) and whose
@@ -150,18 +150,42 @@ def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "hw::HWModuleOp"> {
     values give, and the memory reads its writes' new data (`ruw = new`), as
     the asynchronous read sees a word written on the edge that also moves the
     address. Holds and synchronous resets of the registers are part of their
-    next values, so the read is exact on every cycle after the first edge.
+    next values, so the read is exact on every cycle after the first edge;
+    before it, the read holds the memory's power-on output.
 
-    This is what a block RAM needs: FPGA tools map an asynchronous read to
-    distributed RAM, and only a synchronous one to block RAM. Memories with a
-    read-write port, write ports on several clocks, address registers with an
-    asynchronous reset, or reads whose address depends on anything but such
-    registers and constants are left alone, as are memories of fewer than
-    `min-bits` bits.
+    This is what a block RAM or an SRAM macro needs: they only read
+    synchronously, so an asynchronous read is otherwise mapped to distributed
+    RAM or logic. The address registers must be visible in the memory's
+    module: run the pass where the memory's wrapper is inlined into the
+    module that registers its address.
+
+    Which memories are converted is the design's decision, stated with the
+    synthesis attribute tools already read (`sv.attributes` on the memory):
+    - `ram_style = "block"` (also `ramstyle = "M20K"`, `"block"`,
+      `syn_ramstyle = "block_ram"`, ...): the memory is converted. If it
+      cannot be, the pass fails with the reason: a read-write port, writes on
+      several clocks, an address register with an asynchronous reset or on
+      another clock, or an address that depends on anything but such
+      registers and constants (a module input, a memory read, ...).
+    - `ram_style = "distributed"` (also `"registers"`, `"logic"`, `"MLAB"`,
+      ...): the memory is left alone.
+    - no such attribute: `mode` decides. `off` leaves the memory alone;
+      `auto` converts it if it can and it has at least `min-bits` bits.
+
+    `disable` turns the pass off, hints included, warning for each memory
+    whose hint it leaves unhonored; it is for comparisons only. `report`
+    names a file that receives one line per asynchronous-read memory: its
+    size, hint, the decision and its reason.
   }];
   let options = [
+    Option<"mode", "mode", "std::string", "\"off\"",
+           "Memories without a hint: off (leave alone) or auto">,
     Option<"minBits", "min-bits", "uint64_t", "0",
-           "Leave memories of fewer bits alone">,
+           "In auto mode, leave unhinted memories of fewer bits alone">,
+    Option<"disable", "disable", "bool", "false",
+           "Convert nothing, not even memories that ask for block RAM">,
+    Option<"report", "report", "std::string", "\"\"",
+           "Write a line per asynchronous-read memory to this file">,
   ];
   let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect"];
 }

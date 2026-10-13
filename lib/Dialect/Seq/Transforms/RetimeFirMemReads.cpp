@@ -15,12 +15,15 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqPasses.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/FileUtilities.h"
+#include "llvm/Support/ToolOutputFile.h"
 
 namespace circt {
 namespace seq {
@@ -39,24 +42,82 @@ struct RetimeFirMemReadsPass
   using RetimeFirMemReadsBase::RetimeFirMemReadsBase;
   void runOnOperation() override;
 };
+
+/// What the design asks of a memory.
+enum class Hint { None, Block, Distributed };
 } // namespace
 
+/// The memory style the synthesis attributes of `op` ask for.
+static std::pair<Hint, std::string> getHint(Operation *op) {
+  auto attrs = sv::getSVAttributes(op);
+  if (!attrs)
+    return {Hint::None, ""};
+  for (auto attr : attrs.getAsRange<sv::SVAttributeAttr>()) {
+    auto name = attr.getName().getValue();
+    if (name != "ram_style" && name != "ramstyle" && name != "syn_ramstyle")
+      continue;
+    if (!attr.getExpression())
+      continue;
+    auto text = attr.getExpression().getValue().trim().trim('"').lower();
+    auto spelled = (name + "=" + text).str();
+    // Each tool's names for a synchronous block RAM, and for distributed RAM
+    // or plain logic. A value may list several styles ("M20K, no_rw_check").
+    StringRef value(text);
+    for (auto style : {"block", "block_ram", "bram", "ultra", "m9k", "m10k",
+                       "m20k", "m144k", "m-ram", "mram"})
+      if (value.contains(style))
+        return {Hint::Block, spelled};
+    for (auto style :
+         {"distributed", "registers", "logic", "mlab", "select_ram", "lutram"})
+      if (value.contains(style))
+        return {Hint::Distributed, spelled};
+  }
+  return {Hint::None, ""};
+}
+
+/// A name for `value` in a diagnostic.
+static std::string describe(Value value) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (auto module = dyn_cast<hw::HWModuleOp>(arg.getOwner()->getParentOp())) {
+      os << "input '" << module.getInputName(arg.getArgNumber()) << "'";
+      return text;
+    }
+    os << "block argument";
+    return text;
+  }
+  auto *op = value.getDefiningOp();
+  if (auto name = op->getAttrOfType<StringAttr>("name"); name && !name.empty())
+    os << "'" << name.getValue() << "' (" << op->getName() << ")";
+  else
+    os << op->getName() << " at " << op->getLoc();
+  return text;
+}
+
 /// Whether `value` is computed only from constants and registers on `clock`
-/// with no asynchronous reset, through logic without side effects.
+/// with no asynchronous reset, through logic without side effects. If not,
+/// `reason` says what it depends on instead.
 static bool isFromRegisters(Value value, Value clock,
-                            DenseMap<Value, bool> &cache) {
+                            DenseMap<Value, bool> &cache, std::string &reason) {
   if (auto it = cache.find(value); it != cache.end())
     return it->second;
   bool result = false;
   auto *op = value.getDefiningOp();
   if (auto reg = dyn_cast_or_null<FirRegOp>(op)) {
     result = reg.getClk() == clock && !reg.getIsAsync();
+    if (!result && reason.empty())
+      reason = "address register " + describe(value) +
+               (reg.getIsAsync() ? " has an asynchronous reset"
+                                 : " is on another clock");
   } else if (op && op->getNumRegions() == 0 && isMemoryEffectFree(op) &&
              !isa<FirMemReadOp, FirMemReadWriteOp>(op)) {
     cache[value] = false;
     result = llvm::all_of(op->getOperands(), [&](Value operand) {
-      return isFromRegisters(operand, clock, cache);
+      return isFromRegisters(operand, clock, cache, reason);
     });
+  } else if (reason.empty()) {
+    reason = "address depends on " + describe(value);
   }
   return cache[value] = result;
 }
@@ -86,65 +147,150 @@ static Value getNext(Value value, ImplicitLocOpBuilder &b,
   return nexts[value] = result;
 }
 
-void RetimeFirMemReadsPass::runOnOperation() {
-  SmallVector<FirMemOp> memories;
-  getOperation().walk([&](FirMemOp memory) {
-    if (memory.getReadLatency() == 0 && memory.getWriteLatency() == 1)
-      memories.push_back(memory);
-  });
-
-  for (auto memory : memories) {
-    auto type = memory.getType();
-    if (type.getDepth() * type.getWidth() < minBits)
-      continue;
-    SmallVector<FirMemReadOp> reads;
-    SmallVector<FirMemWriteOp> writes;
-    bool other = false;
-    for (auto *user : memory->getUsers()) {
-      if (auto read = dyn_cast<FirMemReadOp>(user))
-        reads.push_back(read);
-      else if (auto write = dyn_cast<FirMemWriteOp>(user))
-        writes.push_back(write);
-      else
-        other = true;
+/// The clock of `memory`'s reads once retimed, or a reason it has none.
+static FailureOr<Value> getClock(FirMemOp memory,
+                                 MutableArrayRef<FirMemReadOp> reads,
+                                 ArrayRef<FirMemWriteOp> writes,
+                                 std::string &reason) {
+  Value clock;
+  for (auto write : writes) {
+    if (clock && write.getClk() != clock) {
+      reason = "writes on several clocks";
+      return failure();
     }
-    if (other || reads.empty())
-      continue;
-
-    // The clock of the writes, or of a read address's registers if there are
-    // no writes.
-    Value clock;
-    for (auto write : writes) {
-      if (clock && write.getClk() != clock) {
-        clock = {};
-        break;
-      }
-      clock = write.getClk();
-    }
-    if (!clock && !writes.empty())
-      continue;
-    if (!clock)
-      if (auto reg = reads[0].getAddress().getDefiningOp<FirRegOp>())
-        clock = reg.getClk();
-    if (!clock)
-      continue;
-
-    DenseMap<Value, bool> cache;
-    if (!llvm::all_of(reads, [&](FirMemReadOp read) {
-          return isFromRegisters(read.getAddress(), clock, cache);
-        }))
-      continue;
-
-    // Each read reads the next address on the clock's edge.
-    DenseMap<Value, Value> nexts;
-    for (auto read : reads) {
-      ImplicitLocOpBuilder b(read.getLoc(), read);
-      auto address = getNext(read.getAddress(), b, nexts);
-      auto retimed = FirMemReadOp::create(b, memory, address, clock, Value{});
-      read.getData().replaceAllUsesWith(retimed.getData());
-      read.erase();
-    }
-    memory.setReadLatency(1);
-    memory.setRuw(RUW::New);
+    clock = write.getClk();
   }
+  if (!clock)
+    if (auto reg = reads[0].getAddress().getDefiningOp<FirRegOp>())
+      clock = reg.getClk();
+  if (!clock) {
+    reason = "no writes, and the first read's address is not a register";
+    return failure();
+  }
+  return clock;
+}
+
+void RetimeFirMemReadsPass::runOnOperation() {
+  if (mode != "off" && mode != "auto") {
+    getOperation().emitError("seq-retime-firmem-reads: mode must be off or "
+                             "auto, not '")
+        << mode << "'";
+    return signalPassFailure();
+  }
+
+  std::string reportText;
+  llvm::raw_string_ostream reportOS(reportText);
+  bool failed = false;
+  bool changed = false;
+
+  for (auto module : getOperation().getOps<hw::HWModuleOp>()) {
+    SmallVector<FirMemOp> memories;
+    module.walk([&](FirMemOp memory) {
+      if (memory.getReadLatency() == 0 && memory.getWriteLatency() == 1)
+        memories.push_back(memory);
+    });
+
+    for (auto memory : memories) {
+      auto type = memory.getType();
+      uint64_t bits = type.getDepth() * type.getWidth();
+      auto [hint, spelled] = getHint(memory);
+      std::string name = memory.getName() ? memory.getName()->str() : "";
+      if (name.empty())
+        name = "<unnamed>";
+      auto line = [&](StringRef decision, StringRef why) {
+        reportOS << module.getModuleName() << "." << name << " "
+                 << type.getDepth() << "x" << type.getWidth() << " "
+                 << (spelled.empty() ? "no-hint" : spelled) << " " << decision;
+        if (!why.empty())
+          reportOS << " (" << why << ")";
+        reportOS << "\n";
+      };
+
+      if (hint == Hint::Distributed) {
+        line("kept", "hint");
+        continue;
+      }
+      if (disable) {
+        if (hint == Hint::Block)
+          memory.emitWarning("asks for block RAM (")
+              << spelled << "), but memory read retiming is disabled";
+        line("kept", "disabled");
+        continue;
+      }
+      if (hint == Hint::None && mode == "off") {
+        line("kept", "no hint, mode off");
+        continue;
+      }
+      if (hint == Hint::None && bits < minBits) {
+        line("kept", "fewer than min-bits");
+        continue;
+      }
+
+      // Whether the memory can be converted, and if not, why not.
+      std::string reason;
+      SmallVector<FirMemReadOp> reads;
+      SmallVector<FirMemWriteOp> writes;
+      for (auto *user : memory->getUsers()) {
+        if (auto read = dyn_cast<FirMemReadOp>(user))
+          reads.push_back(read);
+        else if (auto write = dyn_cast<FirMemWriteOp>(user))
+          writes.push_back(write);
+        else if (reason.empty())
+          reason = "has a read-write port";
+      }
+      if (reason.empty() && reads.empty())
+        reason = "has no reads";
+      Value clock;
+      if (reason.empty()) {
+        auto found = getClock(memory, reads, writes, reason);
+        if (succeeded(found))
+          clock = *found;
+      }
+      DenseMap<Value, bool> cache;
+      if (reason.empty())
+        for (auto read : reads)
+          if (!isFromRegisters(read.getAddress(), clock, cache, reason))
+            break;
+
+      if (!reason.empty()) {
+        line(hint == Hint::Block ? "ERROR" : "kept", reason);
+        if (hint == Hint::Block) {
+          memory.emitError("asks for block RAM (")
+              << spelled << "), but its asynchronous read cannot be made "
+              << "synchronous: " << reason;
+          failed = true;
+        }
+        continue;
+      }
+
+      // Each read reads the next address on the clock's edge.
+      DenseMap<Value, Value> nexts;
+      for (auto read : reads) {
+        ImplicitLocOpBuilder b(read.getLoc(), read);
+        auto address = getNext(read.getAddress(), b, nexts);
+        auto retimed = FirMemReadOp::create(b, memory, address, clock, Value{});
+        read.getData().replaceAllUsesWith(retimed.getData());
+        read.erase();
+      }
+      memory.setReadLatency(1);
+      memory.setRuw(RUW::New);
+      changed = true;
+      line("converted", "");
+    }
+  }
+
+  if (!report.empty()) {
+    std::string error;
+    auto file = mlir::openOutputFile(report, &error);
+    if (!file) {
+      getOperation().emitError(error);
+      return signalPassFailure();
+    }
+    file->os() << reportText;
+    file->keep();
+  }
+  if (failed)
+    return signalPassFailure();
+  if (!changed)
+    markAllAnalysesPreserved();
 }
