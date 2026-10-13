@@ -23,17 +23,14 @@ hw.module @Basic(in %a: i42, in %b: i42, in %c: i1) {
     // CHECK-NOT: cf.cond_br
     cf.cond_br %5, ^bb3(%4 : i42), ^bb4(%3 : i42)
   ^bb3(%6: i42):
-    // CHECK-NEXT: [[TMP6_COND:%.+]] = comb.and [[TMP0]], [[TMP5]]
-    // CHECK-NEXT: [[TMP6:%.+]] = comb.mux [[TMP6_COND]], [[TMP4]], [[TMP2]]
+    // CHECK-NEXT: [[TMP6:%.+]] = comb.mux [[TMP0]], [[TMP4]], [[TMP2]]
     // CHECK-NEXT: [[TMP7:%.+]] = comb.xor [[TMP1]], [[TMP6]]
     %7 = comb.xor %1, %6 : i42
     // CHECK-NOT: cf.br
     cf.br ^bb4(%7 : i42)
   ^bb4(%8: i42):
-    // CHECK-NEXT: [[TMP8A:%.+]] = hw.constant true
-    // CHECK-NEXT: [[TMP8B:%.+]] = comb.xor [[TMP5]], [[TMP8A]]
-    // CHECK-NEXT: [[TMP8C:%.+]] = comb.and [[TMP0]], [[TMP8B]]
-    // CHECK-NEXT: [[TMP8:%.+]] = comb.mux [[TMP8C]], [[TMP1]], [[TMP7]]
+    // CHECK-NEXT: [[TMP8A:%.+]] = comb.mux [[TMP5]], [[TMP7]], [[TMP1]]
+    // CHECK-NEXT: [[TMP8:%.+]] = comb.mux [[TMP0]], [[TMP8A]], [[TMP7]]
     // CHECK-NEXT: llhd.yield [[TMP8]]
     llhd.yield %8 : i42
   }
@@ -105,3 +102,27 @@ hw.module @HandleCondBranchToSameBlock(in %a: i42, in %b: i42, in %c: i1) {
 }
 
 func.func private @someFunc()
+
+// Both sides of the branch on %fire carry true, one of them through a join
+// other paths share. The value does not depend on %fire, and must not be
+// selected by it: %fire may well be computed from it.
+// CHECK-LABEL: @SameValueThroughSharedJoin
+hw.module @SameValueThroughSharedJoin(in %a: i1, in %fire: i1, out issue: i1) {
+  // CHECK-NEXT: llhd.combinational
+  %0 = llhd.combinational -> i1 {
+    // CHECK-NOT: %fire
+    // CHECK: llhd.yield %a
+    %true = hw.constant true
+    %false = hw.constant false
+    cf.cond_br %a, ^bb1, ^bb2
+  ^bb1:
+    cf.cond_br %fire, ^bb3(%true : i1), ^bb4(%true : i1)
+  ^bb2:
+    cf.br ^bb3(%false : i1)
+  ^bb3(%1: i1):
+    cf.br ^bb4(%1 : i1)
+  ^bb4(%2: i1):
+    llhd.yield %2 : i1
+  }
+  hw.output %0 : i1
+}

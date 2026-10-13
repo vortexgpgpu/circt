@@ -16,6 +16,8 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/Debug.h"
+#include <functional>
+#include <map>
 
 #define DEBUG_TYPE "llhd-remove-control-flow"
 
@@ -168,8 +170,110 @@ struct CFRemover {
   SmallVector<Block *> sortedBlocks;
   /// The dominance information for the region.
   DominanceInfo domInfo;
+
+  /// A block's terminator as it was written, before the block arguments it
+  /// passes on were replaced.
+  struct Branch {
+    Value cond;
+    SmallVector<Block *, 2> dests;
+    SmallVector<SmallVector<Value>, 2> operands;
+  };
+  DenseMap<Block *, Branch> branches;
+  /// The values block arguments have been replaced with.
+  DenseMap<Value, Value> replacements;
+
+  SmallVector<Value> selectArgs(OpBuilder &builder, Block *block,
+                                Block *domBlock);
 };
 } // namespace
+
+/// The values the arguments of `block` take, selected by the branches taken
+/// from `domBlock`: a mux per branch on the way, folded where both ways carry
+/// the same value, ignoring ways that do not reach `block`. Entering a block
+/// along an edge binds its arguments to the edge's values, so a value passed
+/// through a join keeps the branch it came from. Returns nothing if that takes
+/// more than a budget of steps.
+///
+/// Muxing each value on the or of the decisions that lead to the edges carrying
+/// it instead keeps decisions the value does not depend on: an `if (fire)`
+/// whose two sides assign the same value still selects it by `fire`. If `fire`
+/// is computed from that value, this is a false combinational loop.
+SmallVector<Value> CFRemover::selectArgs(OpBuilder &builder, Block *block,
+                                         Block *domBlock) {
+  // The blocks from which control can reach `block`.
+  SmallPtrSet<Block *, 16> reaching;
+  SmallVector<Block *> worklist = {block};
+  while (!worklist.empty()) {
+    auto *b = worklist.pop_back_val();
+    if (!reaching.insert(b).second || b == domBlock)
+      continue;
+    for (auto *pred : b->getPredecessors())
+      worklist.push_back(pred);
+  }
+
+  unsigned budget = 8 * sortedBlocks.size() + 256;
+  SmallVector<Value> args;
+  for (unsigned i = 0; i < block->getNumArguments(); ++i) {
+    // The value argument `i` takes once control is in block `x`, with the
+    // arguments of `x` bound to `xArgs`; null if control cannot reach `block`.
+    std::map<std::pair<Block *, SmallVector<const void *>>, Value> memo;
+    unsigned steps = 0;
+    std::function<FailureOr<Value>(Block *, ArrayRef<Value>)> eval =
+        [&](Block *x, ArrayRef<Value> xArgs) -> FailureOr<Value> {
+      if (!reaching.contains(x))
+        return Value{};
+      std::pair<Block *, SmallVector<const void *>> key;
+      key.first = x;
+      for (auto arg : xArgs)
+        key.second.push_back(arg.getAsOpaquePointer());
+      if (auto it = memo.find(key); it != memo.end())
+        return it->second;
+      if (++steps > budget)
+        return failure();
+
+      auto resolve = [&](Value value) {
+        if (auto arg = dyn_cast<BlockArgument>(value)) {
+          if (arg.getOwner() == x && !xArgs.empty())
+            return xArgs[arg.getArgNumber()];
+          if (auto it = replacements.find(value); it != replacements.end())
+            return it->second;
+        }
+        return value;
+      };
+      auto &branch = branches[x];
+      SmallVector<Value, 2> ways;
+      for (auto [dest, operands] : llvm::zip(branch.dests, branch.operands)) {
+        SmallVector<Value> resolved;
+        for (auto operand : operands)
+          resolved.push_back(resolve(operand));
+        if (dest == block) {
+          ways.push_back(resolved[i]);
+          continue;
+        }
+        auto way = eval(dest, resolved);
+        if (failed(way))
+          return failure();
+        ways.push_back(*way);
+      }
+
+      Value result;
+      if (ways.size() == 1 || !ways[1] || ways[0] == ways[1])
+        result = ways.empty() ? Value{} : ways[0];
+      else if (!ways[0])
+        result = ways[1];
+      else
+        result = builder.createOrFold<comb::MuxOp>(
+            ways[0].getLoc(), resolve(branch.cond), ways[0], ways[1]);
+      memo[key] = result;
+      return result;
+    };
+    auto arg = eval(domBlock, {});
+    if (failed(arg) || !*arg)
+      return {};
+    args.push_back(*arg);
+  }
+  return args;
+}
 
 void CFRemover::run() {
   LLVM_DEBUG(llvm::dbgs() << "Removing control flow in " << region.getLoc()
@@ -235,6 +339,19 @@ void CFRemover::run() {
   // Compute the dominance info for this region.
   domInfo = DominanceInfo(region.getParentOp());
 
+  for (auto *block : sortedBlocks) {
+    auto &branch = branches[block];
+    if (auto condBrOp = dyn_cast<cf::CondBranchOp>(block->getTerminator())) {
+      branch.cond = condBrOp.getCondition();
+      branch.dests = {condBrOp.getTrueDest(), condBrOp.getFalseDest()};
+      branch.operands = {SmallVector<Value>(condBrOp.getTrueDestOperands()),
+                         SmallVector<Value>(condBrOp.getFalseDestOperands())};
+    } else if (auto brOp = dyn_cast<cf::BranchOp>(block->getTerminator())) {
+      branch.dests = {brOp.getDest()};
+      branch.operands = {SmallVector<Value>(brOp.getDestOperands())};
+    }
+  }
+
   // Move operations into the entry block, replacing block arguments with
   // multiplexers as we go. The block order guarantees that we visit a block's
   // predecessors before we visit the block itself.
@@ -274,8 +391,11 @@ void CFRemover::run() {
 
     OpBuilder builder(entryBlock->getTerminator());
     SmallVector<Value> mergedArgs;
+    if (block != entryBlock && block->getNumArguments() != 0)
+      mergedArgs = selectArgs(builder, block, domBlock);
     SmallPtrSet<Block *, 4> seenPreds;
-    for (auto *pred : reachablePreds) {
+    for (auto *pred :
+         mergedArgs.empty() ? reachablePreds : SmallVector<Block *, 4>{}) {
       // A block may be listed multiple times in the predecessors.
       if (!seenPreds.insert(pred).second)
         continue;
@@ -347,8 +467,10 @@ void CFRemover::run() {
       }
     }
     for (auto [blockArg, mergedArg] :
-         llvm::zip(block->getArguments(), mergedArgs))
+         llvm::zip(block->getArguments(), mergedArgs)) {
       blockArg.replaceAllUsesWith(mergedArg);
+      replacements[blockArg] = mergedArg;
+    }
 
     // Move all ops except for the terminator into the entry block.
     if (block != entryBlock)
