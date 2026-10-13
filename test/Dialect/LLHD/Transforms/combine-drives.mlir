@@ -336,6 +336,74 @@ hw.module @SkipNestedGapsOnParentDrive(in %u: i1, in %w: !hw.array<2xi8>, in %en
   llhd.drv %4, %u after %1 : i1
 }
 
+// Nor if another use of the root signal may drive the nested field: a
+// dynamically indexed element, a projection in a process, or an op that takes
+// the signal itself.
+// CHECK-LABEL: @SkipNestedGapsOnDynamicSibling
+hw.module @SkipNestedGapsOnDynamicSibling(in %u: i4, in %w: i8, in %i: i1) {
+  %c0_i1 = hw.constant 0 : i1
+  %c0_i3 = hw.constant 0 : i3
+  %0 = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig
+  // CHECK: [[E0:%.+]] = llhd.sig.array_get %a[%false]
+  // CHECK: [[LO:%.+]] = llhd.sig.extract [[E0]] from %c0_i3
+  // CHECK: llhd.drv [[LO]], %u after
+  // CHECK: [[ED:%.+]] = llhd.sig.array_get %a[%i]
+  // CHECK: llhd.drv [[ED]], %w after
+  // CHECK-NOT: llhd.drv
+  %a = llhd.sig %0 : <!hw.array<2xi8>>
+  %e0 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+  %lo = llhd.sig.extract %e0 from %c0_i3 : <i8> -> <i4>
+  llhd.drv %lo, %u after %1 : i4
+  %ed = llhd.sig.array_get %a[%i] : <!hw.array<2xi8>>
+  llhd.drv %ed, %w after %1 : i8
+}
+
+// CHECK-LABEL: @SkipNestedGapsOnProcessDrive
+hw.module @SkipNestedGapsOnProcessDrive(in %u: i4, in %w: i8) {
+  %c0_i1 = hw.constant 0 : i1
+  %c0_i3 = hw.constant 0 : i3
+  %0 = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig
+  // CHECK: [[E0:%.+]] = llhd.sig.array_get %a[%false]
+  // CHECK: [[LO:%.+]] = llhd.sig.extract [[E0]] from %c0_i3
+  // CHECK: llhd.drv [[LO]], %u after
+  // CHECK: llhd.process
+  // CHECK: llhd.drv {{%.+}}, %w after
+  // CHECK-NOT: llhd.drv
+  %a = llhd.sig %0 : <!hw.array<2xi8>>
+  %e0 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+  %lo = llhd.sig.extract %e0 from %c0_i3 : <i8> -> <i4>
+  llhd.drv %lo, %u after %1 : i4
+  llhd.process {
+    %p = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+    llhd.drv %p, %w after %1 : i8
+    llhd.halt
+  }
+}
+
+func.func private @useSigArray(%arg0: !llhd.ref<!hw.array<2xi8>>)
+
+// CHECK-LABEL: @SkipNestedGapsOnOpaqueUse
+hw.module @SkipNestedGapsOnOpaqueUse(in %u: i4) {
+  %c0_i1 = hw.constant 0 : i1
+  %c0_i3 = hw.constant 0 : i3
+  %0 = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %1 = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: %a = llhd.sig
+  // CHECK: [[E0:%.+]] = llhd.sig.array_get %a[%false]
+  // CHECK: [[LO:%.+]] = llhd.sig.extract [[E0]] from %c0_i3
+  // CHECK: llhd.drv [[LO]], %u after
+  // CHECK-NOT: llhd.drv
+  %a = llhd.sig %0 : <!hw.array<2xi8>>
+  %e0 = llhd.sig.array_get %a[%c0_i1] : <!hw.array<2xi8>>
+  %lo = llhd.sig.extract %e0 from %c0_i3 : <i8> -> <i4>
+  llhd.drv %lo, %u after %1 : i4
+  func.call @useSigArray(%a) : (!llhd.ref<!hw.array<2xi8>>) -> ()
+}
+
 // Don't use default value to fill gaps if there are unknown signal uses. These
 // might drive a signal value that would conflict with the additional default
 // value drive.

@@ -145,7 +145,10 @@ struct ModuleContext {
   // Utilities to aggregate drives to a signal.
   void aggregateDrives(Signal &signal);
   void addDefaultDriveSlices(Signal &signal,
-                             SmallVectorImpl<DriveSlice> &slices);
+                             SmallVectorImpl<DriveSlice> &slices,
+                             const SmallPtrSetImpl<Operation *> &knownDrives);
+  bool isOnlyDrivenBy(Signal &signal,
+                      const SmallPtrSetImpl<Operation *> &knownDrives);
   void aggregateDriveSlices(Signal &signal, Value driveDelay, Value driveEnable,
                             ArrayRef<DriveSlice> slices);
 
@@ -385,7 +388,7 @@ void ModuleContext::aggregateDrives(Signal &signal) {
   // slices.
   if (!hasUnknownUses && drives.size() == 1) {
     auto &slices = drives.begin()->second;
-    addDefaultDriveSlices(signal, slices);
+    addDefaultDriveSlices(signal, slices, knownDrives);
   }
 
   // Combine driven values that uniquely cover the entire signal without gaps or
@@ -396,11 +399,63 @@ void ModuleContext::aggregateDrives(Signal &signal) {
   }
 }
 
+/// Whether a drive of `slice` may assign part of `signal`.
+static bool mayOverlap(SignalSlice slice, Signal *signal) {
+  // A slice of the signal itself or of one of its subsignals.
+  for (auto *s = slice.signal; s; s = s->parent)
+    if (s == signal)
+      return true;
+  // A slice of an ancestor that covers the field the signal descends from.
+  for (auto *s = signal; s->parent; s = s->parent)
+    if (s->parent == slice.signal)
+      return slice.length == 0 ||
+             (s->indexInParent >= slice.offset &&
+              s->indexInParent < slice.offset + slice.length);
+  return false;
+}
+
+/// Check whether `knownDrives` are the only drives that may assign part of a
+/// subsignal. Every use of the root signal must be a probe, a drive of a
+/// statically known part disjoint from the subsignal, or a projection whose
+/// uses are such; anything else, such as a dynamically indexed projection, a
+/// projection in a process, or an instance, may drive the subsignal.
+bool ModuleContext::isOnlyDrivenBy(
+    Signal &signal, const SmallPtrSetImpl<Operation *> &knownDrives) {
+  auto *root = &signal;
+  while (root->parent)
+    root = root->parent;
+  SmallVector<Value> worklist;
+  worklist.push_back(root->value);
+  while (!worklist.empty()) {
+    auto value = worklist.pop_back_val();
+    for (auto &use : value.getUses()) {
+      auto *user = use.getOwner();
+      if (isa<ProbeOp>(user) || knownDrives.contains(user))
+        continue;
+      if (isa<SigExtractOp, SigStructExtractOp, SigArrayGetOp, SigArraySliceOp>(
+              user) &&
+          use.getOperandNumber() == 0) {
+        worklist.push_back(user->getResult(0));
+        continue;
+      }
+      if (isa<DriveOp>(user) && use.getOperandNumber() == 0)
+        if (auto slice = projections.lookup(value);
+            slice && !mayOverlap(slice, &signal))
+          continue;
+      LLVM_DEBUG(llvm::dbgs() << "- Not filling gaps of " << signal
+                              << ": may also be driven by " << *user << "\n");
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Fill gaps in a list of drive slices with parts of the signal's default
 /// value. The slices do not have to be sorted. The filler slices are appended
 /// to `slices` directly.
-void ModuleContext::addDefaultDriveSlices(Signal &signal,
-                                          SmallVectorImpl<DriveSlice> &slices) {
+void ModuleContext::addDefaultDriveSlices(
+    Signal &signal, SmallVectorImpl<DriveSlice> &slices,
+    const SmallPtrSetImpl<Operation *> &knownDrives) {
   auto type = cast<RefType>(signal.value.getType()).getNestedType();
 
   // Sort the slices such that we can find gaps easily.
@@ -461,13 +516,10 @@ void ModuleContext::addDefaultDriveSlices(Signal &signal,
   //
   // For nested signals, walk up to the root `llhd.sig` and descend back down,
   // extracting the subfield from the root's initial value. This is only valid
-  // if no ancestor is driven directly; such a drive would overlap with the
+  // if nothing else may drive the signal; such a drive would compete with the
   // gap fillers we create here.
-  for (auto *ancestor = signal.parent; ancestor; ancestor = ancestor->parent)
-    for (auto slice : ancestor->slices)
-      for (auto &use : slice.value.getUses())
-        if (isa<DriveOp>(use.getOwner()) && use.getOperandNumber() == 0)
-          return;
+  if (signal.parent && !isOnlyDrivenBy(signal, knownDrives))
+    return;
   SmallVector<Signal *> chain;
   for (auto *s = &signal; s; s = s->parent)
     chain.push_back(s);
