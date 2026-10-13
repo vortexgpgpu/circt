@@ -987,6 +987,8 @@ static bool fieldPathsOverlap(ArrayRef<std::string> a,
 /// we hoist those projections out of the region (they are pure) and promote
 /// each of them as a slot. Bit slices (`llhd.sig.extract`) of such a field
 /// remain projections of the field slot.
+static Value getReferenceRoot(Value ref);
+
 void Promoter::hoistFieldProjections() {
   auto *regionOp = region.getParentOp();
   auto isFieldOp = [](Operation *op) {
@@ -1014,13 +1016,14 @@ void Promoter::hoistFieldProjections() {
 
   // Narrow whole-signal probes whose value is only used by constant field
   // accesses (how `x[i]` reads are lowered) into probes of field projections,
-  // placed where the original probe was.
-  SmallVector<ProbeOp> probes;
-  region.walk([&](ProbeOp op) {
-    if (!drivenRoots.contains(op.getSignal()) ||
-        region.isAncestor(op.getSignal().getParentRegion()) ||
-        op.getResult().use_empty())
-      return;
+  // placed where the original probe was. A narrowed probe is narrowed again:
+  // `x[i][j]` reads the element and then the bit, and is the same field as the
+  // bit a process drives.
+  auto isNarrowable = [&](ProbeOp op) {
+    auto root = getReferenceRoot(op.getSignal());
+    if (!drivenRoots.contains(root) ||
+        region.isAncestor(root.getParentRegion()) || op.getResult().use_empty())
+      return false;
     for (auto *user : op->getUsers()) {
       if (auto get = dyn_cast<hw::ArrayGetOp>(user);
           get && matchPattern(get.getIndex(), m_Constant()))
@@ -1029,11 +1032,17 @@ void Promoter::hoistFieldProjections() {
         continue;
       if (isa<comb::ExtractOp>(user) && isa<IntegerType>(op.getType()))
         continue;
-      return;
+      return false;
     }
-    probes.push_back(op);
+    return true;
+  };
+  SmallVector<ProbeOp> probes;
+  region.walk([&](ProbeOp op) {
+    if (isNarrowable(op))
+      probes.push_back(op);
   });
-  for (auto probe : probes) {
+  while (!probes.empty()) {
+    auto probe = probes.pop_back_val();
     OpBuilder builder(probe);
     for (auto *user : llvm::make_early_inc_range(probe->getUsers())) {
       Value field;
@@ -1051,7 +1060,7 @@ void Promoter::hoistFieldProjections() {
         auto width = cast<IntegerType>(probe.getType()).getWidth();
         auto low = hw::ConstantOp::create(
             builder, bits.getLoc(),
-            APInt(llvm::Log2_64_Ceil(width), bits.getLowBit()));
+            APInt(std::max(1u, llvm::Log2_64_Ceil(width)), bits.getLowBit()));
         field = SigExtractOp::create(builder, bits.getLoc(),
                                      RefType::get(bits.getType()),
                                      probe.getSignal(), low);
@@ -1059,6 +1068,8 @@ void Promoter::hoistFieldProjections() {
       auto narrow = ProbeOp::create(builder, user->getLoc(), field);
       user->getResult(0).replaceAllUsesWith(narrow.getResult());
       user->erase();
+      if (isNarrowable(narrow))
+        probes.push_back(narrow);
     }
     probe.erase();
   }

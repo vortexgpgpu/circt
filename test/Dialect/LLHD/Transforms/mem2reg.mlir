@@ -1616,6 +1616,54 @@ hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : 
   }
 }
 
+// A process that only assigns one bit of an element (Vortex VX_matrix_arbiter's
+// `state[r][c] <= ...`, one `always` block per bit) and reads that bit through a
+// whole-signal probe promotes the bit as its slot: the probe is narrowed to the
+// element and then to the bit. Promoting the element instead would make every
+// such process a read-modify-write driver of the whole element.
+// CHECK-LABEL: @FieldSlotPerBit
+hw.module @FieldSlotPerBit(in %g : i1) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %false = hw.constant false
+  %c0_i2 = hw.constant 0 : i2
+  %c1_i2 = hw.constant 1 : i2
+  %init = hw.aggregate_constant [0 : i3, 0 : i3] : !hw.array<2xi3>
+  // CHECK: %x = llhd.sig
+  // CHECK: [[B0:%.+]] = llhd.sig.extract {{%.+}} from %c0_i2 : <i3> -> <i1>
+  // CHECK-NEXT: llhd.process
+  // CHECK-NOT: llhd.drv {{%.+}} : i3
+  // CHECK: llhd.drv [[B0]], {{%.+}} after {{%.+}} : i1
+  // CHECK: [[B1:%.+]] = llhd.sig.extract {{%.+}} from %c1_i2 : <i3> -> <i1>
+  // CHECK-NEXT: llhd.process
+  // CHECK-NOT: llhd.drv {{%.+}} : i3
+  // CHECK: llhd.drv [[B1]], {{%.+}} after {{%.+}} : i1
+  %x = llhd.sig %init : <!hw.array<2xi3>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi3>>
+    %b = llhd.sig.extract %e from %c0_i2 : <i3> -> <i1>
+    %w = llhd.prb %x : !hw.array<2xi3>
+    %old = hw.array_get %w[%false] : !hw.array<2xi3>, i1
+    %bit = comb.extract %old from 0 : (i3) -> i1
+    %n = comb.or %bit, %g : i1
+    llhd.drv %b, %n after %t : i1
+    llhd.wait (%g : i1), ^bb1
+  }
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi3>>
+    %b = llhd.sig.extract %e from %c1_i2 : <i3> -> <i1>
+    %w = llhd.prb %x : !hw.array<2xi3>
+    %old = hw.array_get %w[%false] : !hw.array<2xi3>, i1
+    %bit = comb.extract %old from 1 : (i3) -> i1
+    %n = comb.and %bit, %g : i1
+    llhd.drv %b, %n after %t : i1
+    llhd.wait (%g : i1), ^bb1
+  }
+}
+
 // Field slots are not formed if the region also accesses an overlapping part
 // of the signal; the whole signal is promoted as before.
 // CHECK-LABEL: @NoFieldSlotOnOverlap
