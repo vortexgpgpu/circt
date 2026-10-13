@@ -120,6 +120,9 @@ private:
   SmallPtrSet<Operation *, 8> elementReads;
   /// The ops that assemble written elements from it.
   SmallPtrSet<Operation *, 16> elementOps;
+  /// The ops that observe the register other than through its reads: the
+  /// versions of the array and the elements written to it.
+  SetVector<Operation *> writeChain;
 
   DenseMap<Value, SmallVector<ElementWrite>> peeled;
   DenseMap<Value, BitSources> sources;
@@ -359,22 +362,25 @@ bool MemoryAnalysis::analyze() {
     return false;
   }
 
-  // Nothing but the register itself may observe the write chain.
-  SetVector<Operation *> chain;
+  // Nothing but the register itself may observe the write chain: past the
+  // reads, the register only feeds the elements and versions of the array.
   mlir::ForwardSliceOptions options;
   // The filter also applies to the root, the register.
   options.filter = [&](Operation *op) {
     return op == reg || !llvm::is_contained(reads, op);
   };
-  getForwardSlice(reg.getOperation(), &chain, options);
-  chain.remove(reg);
-  for (auto *op : chain)
+  getForwardSlice(reg.getOperation(), &writeChain, options);
+  writeChain.remove(reg);
+  for (auto *op : llvm::concat<Operation *const>(writeChain, elementOps)) {
+    if (llvm::is_contained(reads, op))
+      continue;
     for (auto *user : op->getUsers())
-      if (user != reg && !chain.contains(user)) {
+      if (user != reg && !inWriteChain(user)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "  Write chain observed by " << *user << "\n");
         return false;
       }
+  }
   planReadPorts();
   return true;
 }
@@ -578,19 +584,30 @@ void MemoryAnalysis::createFirMemory(SmallVectorImpl<Operation *> &opsToErase) {
     return addr;
   };
 
+  // The ops the memory replaces, collected before any rewriting: the new
+  // ports are not part of them even when they use their values.
+  SetVector<Operation *> replaced;
+  replaced.insert(reg);
+  replaced.insert(writeChain.begin(), writeChain.end());
+  replaced.insert(elementOps.begin(), elementOps.end());
+  for (auto &port : ports) {
+    replaced.insert(port.read);
+    if (port.dataReg) {
+      replaced.insert(port.dataReg);
+      if (auto *hold = port.dataReg.getNext().getDefiningOp();
+          hold && hold != port.read)
+        replaced.insert(hold);
+    }
+  }
+
   auto clock = reg.getClk();
+  SmallVector<Value> readData;
   for (auto &port : ports) {
     Value enable =
         port.enable ? port.enable
                     : hw::ConstantOp::create(builder, builder.getI1Type(), 1);
-    Value data = FirMemReadOp::create(
-        builder, firMem, fixZeroWidthAddr(port.addr), clock, enable);
-    if (port.dataReg) {
-      // The register is erased with the write chain it now hangs from.
-      port.dataReg.getResult().replaceAllUsesWith(data);
-    } else {
-      port.read.getResult().replaceAllUsesWith(data);
-    }
+    readData.push_back(FirMemReadOp::create(
+        builder, firMem, fixZeroWidthAddr(port.addr), clock, enable));
   }
 
   SmallVector<Value> conds;
@@ -629,14 +646,32 @@ void MemoryAnalysis::createFirMemory(SmallVectorImpl<Operation *> &opsToErase) {
   FirMemWriteOp::create(builder, firMem, fixZeroWidthAddr(writeAddr), clock,
                         enable, data, mask);
 
-  // The write chain and the replaced reads are now unused.
-  SetVector<Operation *> chain;
-  mlir::ForwardSliceOptions options;
-  getForwardSlice(reg.getOperation(), &chain, options);
-  chain.remove(reg);
-  opsToErase.push_back(reg);
-  for (auto *op : llvm::reverse(chain))
-    opsToErase.push_back(op);
+  // A taken data register holds what its read port now returns, also where
+  // the ports and the write use it, as write data or as an enable.
+  for (auto [port, value] : llvm::zip(ports, readData)) {
+    if (port.dataReg)
+      port.dataReg.getResult().replaceAllUsesWith(value);
+    else
+      port.read.getResult().replaceAllUsesWith(value);
+  }
+
+  // Erase the replaced ops that nothing else uses any more.
+  SmallPtrSet<Operation *, 8> kept;
+  auto isKept = [&](Operation *op) {
+    return !replaced.contains(op) || kept.contains(op);
+  };
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (auto *op : replaced)
+      if (!kept.contains(op) && llvm::any_of(op->getUsers(), isKept)) {
+        LLVM_DEBUG(llvm::dbgs() << "  Still used: " << *op << "\n");
+        kept.insert(op);
+        changed = true;
+      }
+  }
+  for (auto *op : replaced)
+    if (!kept.contains(op))
+      opsToErase.push_back(op);
 }
 
 void RegOfVecToMemPass::runOnOperation() {
