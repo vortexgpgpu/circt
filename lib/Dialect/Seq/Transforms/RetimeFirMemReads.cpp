@@ -22,6 +22,7 @@
 #include "circt/Dialect/Seq/SeqPasses.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -100,9 +101,10 @@ static std::string describe(Value value) {
 
 /// Whether `value` is computed only from constants and registers on `clock`
 /// with no asynchronous reset, through logic without side effects. If not,
-/// `reason` says what it depends on instead.
+/// `reason` says what it depends on instead; `what` names the value there.
 static bool isFromRegisters(Value value, Value clock,
-                            DenseMap<Value, bool> &cache, std::string &reason) {
+                            DenseMap<Value, bool> &cache, std::string &reason,
+                            StringRef what) {
   if (auto it = cache.find(value); it != cache.end())
     return it->second;
   bool result = false;
@@ -110,19 +112,27 @@ static bool isFromRegisters(Value value, Value clock,
   if (auto reg = dyn_cast_or_null<FirRegOp>(op)) {
     result = reg.getClk() == clock && !reg.getIsAsync();
     if (!result && reason.empty())
-      reason = "address register " + describe(value) +
+      reason = what.str() + " register " + describe(value) +
                (reg.getIsAsync() ? " has an asynchronous reset"
                                  : " is on another clock");
   } else if (op && op->getNumRegions() == 0 && isMemoryEffectFree(op) &&
              !isa<FirMemReadOp, FirMemReadWriteOp>(op)) {
     cache[value] = false;
     result = llvm::all_of(op->getOperands(), [&](Value operand) {
-      return isFromRegisters(operand, clock, cache, reason);
+      return isFromRegisters(operand, clock, cache, reason, what);
     });
   } else if (reason.empty()) {
-    reason = "address depends on " + describe(value);
+    reason = what.str() + " depends on " + describe(value);
   }
   return cache[value] = result;
+}
+
+/// The enable of a read, unless it is always enabled.
+static Value getEnable(FirMemReadOp read) {
+  auto enable = read.getEnable();
+  if (enable && matchPattern(enable, mlir::m_One()))
+    return {};
+  return enable;
 }
 
 /// The value `value` takes after the next edge: its logic on the registers'
@@ -264,7 +274,13 @@ void RetimeFirMemReadsPass::runOnOperation() {
         if (!read)
           continue;
         SmallPtrSet<Operation *, 8> crossed;
-        if (isFromRegistersAcross(read.getAddress(), graph, cache, crossed))
+        if (!isFromRegistersAcross(read.getAddress(), graph, cache, crossed))
+          continue;
+        marked.insert(crossed.begin(), crossed.end());
+        // A read enable from registers is kept if they are brought in too.
+        crossed.clear();
+        if (auto enable = getEnable(read);
+            enable && isFromRegistersAcross(enable, graph, cache, crossed))
           marked.insert(crossed.begin(), crossed.end());
       }
     });
@@ -367,7 +383,8 @@ void RetimeFirMemReadsPass::runOnOperation() {
       DenseMap<Value, bool> cache;
       if (reason.empty())
         for (auto read : reads)
-          if (!isFromRegisters(read.getAddress(), clock, cache, reason))
+          if (!isFromRegisters(read.getAddress(), clock, cache, reason,
+                               "address"))
             break;
 
       if (!reason.empty()) {
@@ -381,12 +398,22 @@ void RetimeFirMemReadsPass::runOnOperation() {
         continue;
       }
 
-      // Each read reads the next address on the clock's edge.
+      // Each read reads the next address on the clock's edge. A read enable
+      // computed from registers is retimed the same way. Any other is dropped:
+      // the data of a disabled read is undefined, so a read that is always
+      // enabled returns data where the read did.
       DenseMap<Value, Value> nexts;
       for (auto read : reads) {
         ImplicitLocOpBuilder b(read.getLoc(), read);
         auto address = getNext(read.getAddress(), b, nexts);
-        auto retimed = FirMemReadOp::create(b, memory, address, clock, Value{});
+        Value enable = getEnable(read);
+        std::string enableReason;
+        if (enable &&
+            isFromRegisters(enable, clock, cache, enableReason, "read enable"))
+          enable = getNext(enable, b, nexts);
+        else
+          enable = {};
+        auto retimed = FirMemReadOp::create(b, memory, address, clock, enable);
         read.getData().replaceAllUsesWith(retimed.getData());
         read.erase();
       }

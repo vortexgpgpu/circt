@@ -41,6 +41,22 @@ hw.module @Registered(in %clk : !seq.clock, in %reset : i1, in %we : i1, in %wad
   hw.output %q0, %q1, %q2 : i32, i32, i32
 }
 
+// A read enable from registers is retimed like the address. Any other is
+// dropped: the data of a disabled read is undefined.
+// CHECK-LABEL: hw.module @ReadEnable
+// CHECK:       %mem = seq.firmem 1, 1, new, undefined : <1024 x 32, mask 1>
+// CHECK-DAG:   seq.firmem.read_port %mem[%raddr], clock %clk enable %ren : <1024 x 32, mask 1>
+// CHECK-DAG:   seq.firmem.read_port %mem[%raddr], clock %clk : <1024 x 32, mask 1>
+hw.module @ReadEnable(in %clk : !seq.clock, in %we : i1, in %waddr : i10, in %wdata : i32, in %raddr : i10, in %ren : i1, out q0 : i32, out q1 : i32) {
+  %mem = seq.firmem 0, 1, undefined, undefined : <1024 x 32, mask 1>
+  seq.firmem.write_port %mem[%waddr] = %wdata, clock %clk enable %we : <1024 x 32, mask 1>
+  %ra = seq.firreg %raddr clock %clk : i10
+  %en = seq.firreg %ren clock %clk : i1
+  %q0 = seq.firmem.read_port %mem[%ra], clock %clk enable %en : <1024 x 32, mask 1>
+  %q1 = seq.firmem.read_port %mem[%ra], clock %clk enable %ren : <1024 x 32, mask 1>
+  hw.output %q0, %q1 : i32, i32
+}
+
 // Left alone: an address not from a register, a register with an
 // asynchronous reset, and writes on another clock.
 // CHECK-LABEL: hw.module @Unchanged
