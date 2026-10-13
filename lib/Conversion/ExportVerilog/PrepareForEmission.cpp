@@ -1394,7 +1394,10 @@ static Value getArrayIndex(ImplicitLocOpBuilder &builder, size_t index,
 
 /// Copy an unpacked array into a packed one element by element. The elements
 /// are read through a declaration, the only thing Verilog can index that is
-/// not a port or a variable.
+/// not a port or a variable. As in an assignment between arrays, elements
+/// correspond from the left: the first element of the unpacked array, at index
+/// 0, is the most significant element of the packed one, as MooreToCore and
+/// the `hw.bitcast` folder lay them out.
 static Value packArray(ImplicitLocOpBuilder &builder, Value value,
                        bool procedural) {
   auto array = hw::type_dyn_cast<UnpackedArrayType>(value.getType());
@@ -1408,10 +1411,11 @@ static Value packArray(ImplicitLocOpBuilder &builder, Value value,
     decl = sv::WireOp::create(builder, value.getType());
     sv::AssignOp::create(builder, decl, value);
   }
-  // Array creation lists the highest index first.
+  // Array creation lists the highest index first: the element the unpacked
+  // array has at index 0.
   size_t size = array.getNumElements();
   SmallVector<Value> elements;
-  for (size_t index = size; index-- > 0;) {
+  for (size_t index = 0; index < size; ++index) {
     auto element = sv::ArrayIndexInOutOp::create(
         builder, decl, getArrayIndex(builder, index, size));
     elements.push_back(packArray(
@@ -1427,9 +1431,11 @@ static Value unpackArray(ImplicitLocOpBuilder &builder, Value value,
   auto array = hw::type_dyn_cast<UnpackedArrayType>(type);
   if (!array)
     return value;
+  // The unpacked array lists its highest index first, the element the packed
+  // array has at index 0.
   size_t size = array.getNumElements();
   SmallVector<Value> elements;
-  for (size_t index = size; index-- > 0;) {
+  for (size_t index = 0; index < size; ++index) {
     auto element = hw::ArrayGetOp::create(builder, value,
                                           getArrayIndex(builder, index, size));
     elements.push_back(unpackArray(builder, element, array.getElementType()));
