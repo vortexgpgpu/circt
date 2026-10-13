@@ -137,6 +137,11 @@ The current set of "style" Lowering Options is:
    blocks around `if`/`else`/`always` bodies, even when the body contains only
    a single statement. By default, CIRCT omits `begin`/`end` for single-statement
    bodies to produce more concise output.
+ * `disallowSizeCasts` (default=`false`). If true, never emit SystemVerilog size
+   casts such as `8'(a + b)`, which Verilog-2005 does not have. A multiplication
+   of sign extensions is then emitted as the unsigned multiplication of the
+   extended values rather than as a signed multiplication of the narrower ones,
+   and `explicitBitcast` adds no casts.
 
 The current set of "lint warnings fix" Lowering Options is:
 
@@ -193,7 +198,8 @@ and this option helps to create a wire with the desired behavior.
 For Yosys, we recommend using the `disallowLocalVariables` and `disallowPackedArrays`
 options. Yosys doesn't parse `automatic` variables, so `disallowLocalVariables` is
 required. Additionally, Yosys doesn't accept packed arrays, so we suggest using
-`disallowPackedArrays`.
+`disallowPackedArrays`. When Yosys reads the output as Verilog-2005 rather than
+SystemVerilog, also use `disallowSizeCasts`.
 
 
 ### Specifying `LoweringOptions` in a front-end HDL tool

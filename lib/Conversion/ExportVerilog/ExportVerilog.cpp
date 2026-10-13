@@ -2720,7 +2720,8 @@ SubExprInfo ExprEmitter::emitSubExpr(Value exp,
   signPreference = signRequirement;
 
   bool bitCastAdded = false;
-  if (state.options.explicitBitcast && isa<AddOp, MulOp, SubOp>(op))
+  if (state.options.explicitBitcast && !state.options.disallowSizeCasts &&
+      isa<AddOp, MulOp, SubOp>(op))
     if (auto inType =
             dyn_cast_or_null<IntegerType>(op->getResult(0).getType())) {
       ps.addAsString(inType.getWidth());
@@ -3432,12 +3433,15 @@ static SmallVector<Value> getSignExtended(Value value) {
 
 /// A multiplication of sign extensions is the signed multiplication of the
 /// narrower values, at the width of the result. Emitted as such, synthesis
-/// sees the multiplier it is, rather than one of the full width.
+/// sees the multiplier it is, rather than one of the full width. Only a size
+/// cast gives the multiplication the result's width wherever it is used.
 SubExprInfo ExprEmitter::visitComb(MulOp op) {
   assert(op.getNumOperands() == 2 && "prelowering should handle variadics");
+  if (state.options.disallowSizeCasts || hasSVAttributes(op))
+    return emitBinary(op, Multiply, "*");
   auto lhs = getSignExtended(op.getOperand(0));
   auto rhs = getSignExtended(op.getOperand(1));
-  if (lhs.empty() || rhs.empty() || hasSVAttributes(op))
+  if (lhs.empty() || rhs.empty())
     return emitBinary(op, Multiply, "*");
 
   auto emitSigned = [&](ArrayRef<Value> bits) {

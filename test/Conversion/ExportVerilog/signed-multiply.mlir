@@ -1,8 +1,14 @@
 // RUN: circt-opt %s -export-verilog -verify-diagnostics | FileCheck %s
+// RUN: circt-opt %s --test-apply-lowering-options='options=disallowSizeCasts,explicitBitcast' -export-verilog -verify-diagnostics | FileCheck %s --check-prefix=NOCAST
 
 // A multiplication of sign extensions is emitted as the signed multiplication
 // of the narrower values, at the width of the result.
 // CHECK-LABEL: module SignedMultiply(
+// Without size casts, as in Verilog-2005, the extended values are multiplied.
+// NOCAST-LABEL: module SignedMultiply(
+// NOCAST: assign p = {{[{][{]}}34{s}}, x} * {{[{][{]}}33{y[32]}}, y};
+// NOCAST: assign q = {{[{][{]}}8{u[7]}}, u} * {8'h0, u};
+// NOCAST: assign r = {{[{][{]}}7{s}}, s, u} * {{[{][{]}}8{u[7]}}, u};
 hw.module @SignedMultiply(in %s : i1, in %x : i32, in %y : i33, in %u : i8, out p : i66, out q : i16, out r : i16) {
   // `{s, x}` sign extended, times `y` sign extended from its own sign bit.
   // CHECK: assign p = $unsigned(66'($signed({s, x}) * $signed(y)));

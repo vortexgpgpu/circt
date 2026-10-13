@@ -150,6 +150,8 @@ void LoweringOptions::parse(StringRef text, ErrorHandlerT errorHandler) {
       disallowDeclAssignments = true;
     } else if (option == "alwaysEmitBeginEnd") {
       alwaysEmitBeginEnd = true;
+    } else if (option == "disallowSizeCasts") {
+      disallowSizeCasts = true;
     } else {
       errorHandler(llvm::Twine("unknown style option \'") + option + "\'");
       // We continue parsing options after a failure.
@@ -221,6 +223,8 @@ std::string LoweringOptions::toString() const {
     options += "disallowDeclAssignments,";
   if (alwaysEmitBeginEnd)
     options += "alwaysEmitBeginEnd,";
+  if (disallowSizeCasts)
+    options += "disallowSizeCasts,";
 
   // Remove a trailing comma if present.
   if (!options.empty()) {

@@ -193,6 +193,10 @@ struct LoweringOptions {
   /// when there is only a single statement.
   bool alwaysEmitBeginEnd = false;
 
+  /// If true, never emit SystemVerilog size casts such as `8'(a + b)`, which
+  /// Verilog-2005 does not have.
+  bool disallowSizeCasts = false;
+
   /// Controls the declaration syntax emitted for `sv.var`.
   ///
   /// - VarLogic: Always emits the `var` keyword. Integer vectors print as `var
