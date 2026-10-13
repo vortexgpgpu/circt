@@ -261,10 +261,16 @@ Bits Analysis::compute(Value value) {
   APInt index;
   if (auto arraySlice = dyn_cast<hw::ArraySliceOp>(op);
       arraySlice &&
-      matchPattern(arraySlice.getLowIndex(), m_ConstantInt(&index)))
-    return slice(arraySlice.getInput(),
-                 index.getZExtValue() *
-                     elementWidth(arraySlice.getInput().getType()));
+      matchPattern(arraySlice.getLowIndex(), m_ConstantInt(&index))) {
+    auto input = arraySlice.getInput();
+    auto size = hw::type_cast<hw::ArrayType>(input.getType()).getNumElements();
+    auto length =
+        hw::type_cast<hw::ArrayType>(arraySlice.getType()).getNumElements();
+    // A slice past the end of the array reads undefined elements.
+    if (index.getZExtValue() > size - length)
+      return varying;
+    return slice(input, index.getZExtValue() * elementWidth(input.getType()));
+  }
   // A struct's first field is in the high bits.
   if (auto create = dyn_cast<hw::StructCreateOp>(op))
     return appendReversed(create.getInput());
@@ -370,14 +376,18 @@ void RegConstPropPass::runOnOperation() {
             b.getIntegerAttr(b.getIntegerType(value->getBitWidth()), *value);
       }
       auto next = keep(toInteger(reg.getNext()));
+      FirRegOp narrowReg;
       if (reg.hasReset())
-        narrow = FirRegOp::create(b, next, reg.getClk(), reg.getNameAttr(),
-                                  reg.getReset(),
-                                  keep(toInteger(reg.getResetValue())),
-                                  hw::InnerSymAttr{}, reg.getIsAsync(), preset);
+        narrowReg = FirRegOp::create(
+            b, next, reg.getClk(), reg.getNameAttr(), reg.getReset(),
+            keep(toInteger(reg.getResetValue())), hw::InnerSymAttr{},
+            reg.getIsAsync(), preset);
       else
-        narrow = FirRegOp::create(b, next, reg.getClk(), reg.getNameAttr(),
-                                  hw::InnerSymAttr{}, preset);
+        narrowReg = FirRegOp::create(b, next, reg.getClk(), reg.getNameAttr(),
+                                     hw::InnerSymAttr{}, preset);
+      // Keep the synthesis attributes the register was declared with.
+      narrowReg->setDialectAttrs(reg->getDialectAttrs());
+      narrow = narrowReg;
     }
 
     // The register's value, its constant bits put back.

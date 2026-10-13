@@ -72,3 +72,27 @@ hw.module @WordCycle(in %clk : !seq.clock, in %a : i1, out o : i2) {
   %o = comb.xor %r, %w : i2
   hw.output %o : i2
 }
+
+// A narrowed register keeps the synthesis attributes it was declared with.
+// CHECK-LABEL: hw.module @Attributes
+// CHECK: %r = seq.firreg {{%.+}} clock %clk {sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i4
+hw.module @Attributes(in %clk : !seq.clock, in %d : i4, out q : i8) {
+  %c0_i4 = hw.constant 0 : i4
+  %cat = comb.concat %c0_i4, %d : i4, i4
+  %r = seq.firreg %cat clock %clk {sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i8
+  hw.output %r : i8
+}
+
+// A slice reaching past the end of the array reads undefined elements, not the
+// constant element it starts at and whatever follows.
+// CHECK-LABEL: hw.module @SlicePastEnd
+// CHECK: %q = seq.firreg {{%.+}} clock %clk : !hw.array<2xi8>
+hw.module @SlicePastEnd(in %clk : !seq.clock, in %d : i8, out o : !hw.array<2xi8>) {
+  %c0_i8 = hw.constant 0 : i8
+  %c3_i2 = hw.constant 3 : i2
+  %next = hw.array_create %c0_i8, %d, %d, %d : i8
+  %r = seq.firreg %next clock %clk : !hw.array<4xi8>
+  %s = hw.array_slice %r[%c3_i2] : (!hw.array<4xi8>) -> !hw.array<2xi8>
+  %q = seq.firreg %s clock %clk : !hw.array<2xi8>
+  hw.output %q : !hw.array<2xi8>
+}
