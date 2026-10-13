@@ -134,6 +134,21 @@ FirMemConfig FirMemLowering::collectMemory(FirMemOp op) {
     }
   }
 
+  // The clock of every port, in the order of the generated module's ports,
+  // numbered in that order so that memories clocked alike compare equal.
+  SmallDenseMap<Value, unsigned> portClocks;
+  auto addClockIDs = [&](auto portType) {
+    for (auto *user : op->getUsers())
+      if (auto port = dyn_cast<decltype(portType)>(user))
+        cfg.clockIDs.push_back(
+            portClocks.insert({lookThroughWires(port.getClk()),
+                               portClocks.size()})
+                .first->second);
+  };
+  addClockIDs(FirMemReadOp{});
+  addClockIDs(FirMemReadWriteOp{});
+  addClockIDs(FirMemWriteOp{});
+
   return cfg;
 }
 
@@ -302,6 +317,7 @@ FirMemLowering::createMemoryModule(FirMemConfig &mem,
       genAttr("writeUnderWrite",
               seq::WUWAttr::get(builder.getContext(), mem.writeUnderWrite)),
       genAttr("writeClockIDs", builder.getI32ArrayAttr(mem.writeClockIDs)),
+      genAttr("clockIDs", builder.getI32ArrayAttr(mem.clockIDs)),
       genAttr("initFilename", builder.getStringAttr(mem.initFilename)),
       genAttr("initIsBinary", builder.getBoolAttr(mem.initIsBinary)),
       genAttr("initIsInline", builder.getBoolAttr(mem.initIsInline))};

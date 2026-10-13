@@ -52,6 +52,10 @@ struct FirMemory {
   seq::RUW readUnderWrite;
   seq::WUW writeUnderWrite;
   SmallVector<int32_t> writeClockIDs;
+  /// The clock of every port, read ports first, then read-write and write
+  /// ports: ports with the same ID are clocked by the same value. Empty if
+  /// unknown.
+  SmallVector<int32_t> clockIDs;
   StringRef initFilename;
   bool initIsBinary;
   bool initIsInline;

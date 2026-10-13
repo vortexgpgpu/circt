@@ -1142,6 +1142,9 @@ FirMemory::FirMemory(hw::HWModuleGeneratedOp op) {
     for (auto clockID : clockIDsAttr)
       writeClockIDs.push_back(
           cast<IntegerAttr>(clockID).getValue().getZExtValue());
+  if (auto clockIDsAttr = op->getAttrOfType<ArrayAttr>("clockIDs"))
+    for (auto clockID : clockIDsAttr)
+      clockIDs.push_back(cast<IntegerAttr>(clockID).getValue().getZExtValue());
   initFilename = op->getAttrOfType<StringAttr>("initFilename").getValue();
   initIsBinary = op->getAttrOfType<BoolAttr>("initIsBinary").getValue();
   initIsInline = op->getAttrOfType<BoolAttr>("initIsInline").getValue();

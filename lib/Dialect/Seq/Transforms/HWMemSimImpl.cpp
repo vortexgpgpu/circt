@@ -242,11 +242,22 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
 
   SmallVector<Value, 4> outputs;
 
+  // Ports clocked by the same value use the same clock: a synthesis tool
+  // sees one clock and keeps the read-under-write behavior, where clocks it
+  // must take as independent leave a collision undefined.
+  DenseMap<int32_t, Value> clockOfID;
+  size_t portIdx = 0;
+  auto portClock = [&](Value clock) {
+    if (mem.clockIDs.size() != numPorts)
+      return clock;
+    return clockOfID.try_emplace(mem.clockIDs[portIdx++], clock).first->second;
+  };
+
   size_t inArg = 0;
   for (size_t i = 0; i < mem.numReadPorts; ++i) {
     Value addr = op.getBody().getArgument(inArg++);
     Value en = op.getBody().getArgument(inArg++);
-    Value clock = op.getBody().getArgument(inArg++);
+    Value clock = portClock(op.getBody().getArgument(inArg++));
 
     // Returning the data from before a write to the same address means
     // reading in the cycle the address arrives and registering the data, as a
@@ -305,7 +316,7 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     auto numCommonStages = std::min(numReadStages, numWriteStages);
     Value addr = op.getBody().getArgument(inArg++);
     Value en = op.getBody().getArgument(inArg++);
-    Value clock = op.getBody().getArgument(inArg++);
+    Value clock = portClock(op.getBody().getArgument(inArg++));
     Value wmode = op.getBody().getArgument(inArg++);
     Value wdataIn = op.getBody().getArgument(inArg++);
     Value wmaskBits;
@@ -433,7 +444,7 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     auto numStages = mem.writeLatency - 1;
     Value addr = op.getBody().getArgument(inArg++);
     Value en = op.getBody().getArgument(inArg++);
-    Value clock = op.getBody().getArgument(inArg++);
+    Value clock = portClock(op.getBody().getArgument(inArg++));
     Value wdataIn = op.getBody().getArgument(inArg++);
     Value wmaskBits;
     // There are no input mask ports, if maskBits =1. Create a dummy true value

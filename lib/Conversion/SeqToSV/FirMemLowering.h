@@ -32,6 +32,9 @@ struct FirMemConfig {
   seq::RUW readUnderWrite = seq::RUW::Undefined;
   seq::WUW writeUnderWrite = seq::WUW::Undefined;
   SmallVector<int32_t, 1> writeClockIDs;
+  /// The clock of every port, read ports first, then read-write and write
+  /// ports: ports with the same ID are clocked by the same value.
+  SmallVector<int32_t, 1> clockIDs;
   StringRef initFilename;
   bool initIsBinary = false;
   bool initIsInline = false;
@@ -46,14 +49,15 @@ struct FirMemConfig {
                               maskBits, readUnderWrite, writeUnderWrite,
                               initFilename, initIsBinary, initIsInline, prefix,
                               svAttributes) ^
-           llvm::hash_combine_range(writeClockIDs.begin(), writeClockIDs.end());
+           llvm::hash_combine_range(writeClockIDs.begin(), writeClockIDs.end()) ^
+           llvm::hash_combine_range(clockIDs.begin(), clockIDs.end());
   }
 
   auto getTuple() const {
     return std::make_tuple(numReadPorts, numWritePorts, numReadWritePorts,
                            dataWidth, depth, readLatency, writeLatency,
                            maskBits, readUnderWrite, writeUnderWrite,
-                           writeClockIDs, initFilename, initIsBinary,
+                           writeClockIDs, clockIDs, initFilename, initIsBinary,
                            initIsInline, prefix, svAttributes);
   }
 
