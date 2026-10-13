@@ -261,10 +261,8 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
 
     // Returning the data from before a write to the same address means
     // reading in the cycle the address arrives and registering the data, as a
-    // read-first block RAM does. The data holds while the port is disabled,
-    // which `seq.firmem.read_port` defines: the read enable mode, which
-    // chooses the data of a disabled read where it is undefined, does not
-    // apply.
+    // read-first block RAM does. The data of a disabled read is undefined: it
+    // holds, as in such a block RAM, unless zeros are asked for.
     if (mem.readUnderWrite == seq::RUW::Old && mem.readLatency > 0) {
       auto stages = mem.readLatency - 1;
       en = addPipelineStages(b, moduleNamespace, stages, clock, en,
@@ -272,8 +270,15 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
       addr = addPipelineStages(b, moduleNamespace, stages, clock, addr,
                                "R" + Twine(i) + "_addr");
       Value rdata = getMemoryRead(b, reg, addr, addMuxPragmas);
-      outputs.push_back(addPipelineStages(b, moduleNamespace, 1, clock, rdata,
-                                          "R" + Twine(i) + "_data", en));
+      rdata = addPipelineStages(b, moduleNamespace, 1, clock, rdata,
+                                "R" + Twine(i) + "_data", en);
+      if (readEnableMode == ReadEnableMode::Zero) {
+        Value enOut = addPipelineStages(b, moduleNamespace, 1, clock, en,
+                                        "R" + Twine(i) + "_data_en");
+        Value zero = hw::ConstantOp::create(b, rdata.getType(), 0);
+        rdata = comb::MuxOp::create(b, enOut, rdata, zero, false);
+      }
+      outputs.push_back(rdata);
       continue;
     }
 

@@ -108,8 +108,8 @@ void InferMemoriesPass::runOnOperation() {
 
     // A memory returning the data from before a write to the same address
     // reads the storage in the cycle before the data is due and registers it,
-    // as a read-first block RAM does. Like `HWMemSimImpl`, its read ports
-    // hold the data while disabled.
+    // as a read-first block RAM does. Its read ports hold the data while
+    // disabled, as `HWMemSimImpl` does by default.
     auto ruwAttr = params.getAs<IntegerAttr>("readUnderWrite");
     bool readFirst =
         ruwAttr && readLatency > 0 &&

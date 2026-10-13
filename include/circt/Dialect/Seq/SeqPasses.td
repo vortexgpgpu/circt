@@ -83,15 +83,15 @@ def HWMemSimImpl : Pass<"hw-memory-sim", "ModuleOp"> {
                 "false", "Prepare seq mems for macro replacement">,
     Option<"readEnableMode", "read-enable-mode", "::circt::seq::ReadEnableMode",
            "::circt::seq::ReadEnableMode::Undefined",
-           "specify the behaviour of the read enable signal where the data "
-           "of a disabled read is undefined", [{
+           "specify the behaviour of the read enable signal", [{
               ::llvm::cl::values(
               clEnumValN(::circt::seq::ReadEnableMode::Ignore, "ignore",
                          "Ignore the read enable signal"),
               clEnumValN(::circt::seq::ReadEnableMode::Zero, "zero",
                          "Output zeros when reads are disabled"),
               clEnumValN(::circt::seq::ReadEnableMode::Undefined, "undefined",
-                         "Output X when reads are disbled"))
+                         "Output X when reads are disbled; a registered read "
+                         "of an old-data memory holds its data instead"))
            }]>,
     Option<"addMuxPragmas", "add-mux-pragmas", "bool", "false",
             "Add mux pragmas to memory reads">,
