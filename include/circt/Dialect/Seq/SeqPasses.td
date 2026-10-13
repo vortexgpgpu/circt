@@ -155,9 +155,11 @@ def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "mlir::ModuleOp"> {
 
     This is what a block RAM or an SRAM macro needs: they only read
     synchronously, so an asynchronous read is otherwise mapped to distributed
-    RAM or logic. The address registers must be visible in the memory's
-    module: run the pass where the memory's wrapper is inlined into the
-    module that registers its address.
+    RAM or logic. The address registers are often in another module than
+    the memory, which receives the address on a port: the pass inlines the
+    private modules between a memory it converts and its address registers
+    (`hw-flatten-modules` with `hw-inline-marked`), and only those, unless
+    `inline` is off.
 
     Which memories are converted is the design's decision, stated with the
     synthesis attribute tools already read (`sv.attributes` on the memory):
@@ -186,6 +188,8 @@ def RetimeFirMemReads : Pass<"seq-retime-firmem-reads", "mlir::ModuleOp"> {
            "Convert nothing, not even memories that ask for block RAM">,
     Option<"report", "report", "std::string", "\"\"",
            "Write a line per asynchronous-read memory to this file">,
+    Option<"inlineModules", "inline", "bool", "true",
+           "Inline the modules between a memory and its address registers">,
   ];
   let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect"];
 }

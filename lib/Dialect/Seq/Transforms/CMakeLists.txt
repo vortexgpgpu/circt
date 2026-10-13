@@ -18,6 +18,7 @@ add_circt_dialect_library(CIRCTSeqTransforms
   CIRCTComb
   CIRCTEmit
   CIRCTHW
+  CIRCTHWTransforms
   CIRCTSeq
   CIRCTSupport
   CIRCTSV

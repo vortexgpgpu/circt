@@ -71,7 +71,9 @@ def FlattenModules : Pass<"hw-flatten-modules", "mlir::ModuleOp"> {
     optimization of state transfer arcs.
 
     By default, all private modules are inlined. The pass supports heuristics to
-    control which modules are inlined based on their characteristics.
+    control which modules are inlined based on their characteristics, and
+    `hw-inline-marked` inlines the private modules another pass marked with
+    the `hw.inline` attribute, whatever they contain.
   }];
   let options = [
     Option<"inlineEmpty", "hw-inline-empty", "bool", "true",
@@ -89,7 +91,9 @@ def FlattenModules : Pass<"hw-flatten-modules", "mlir::ModuleOp"> {
     Option<"inlinePublic", "hw-inline-public", "bool", "false",
            "Inline public modules as well as private ones">,
     Option<"inlineAll", "hw-inline-all", "bool", "true",
-           "Inline all private modules regardless of heuristics (default behavior)">
+           "Inline all private modules regardless of heuristics (default behavior)">,
+    Option<"inlineMarked", "hw-inline-marked", "bool", "false",
+           "Inline private modules marked with the `hw.inline` attribute">
   ];
 }
 

@@ -176,6 +176,10 @@ bool FlattenModulesPass::shouldInline(HWModuleOp module,
   if (this->inlineAll)
     return true;
 
+  // Another pass asked for this module to be inlined.
+  if (this->inlineMarked && module->hasAttr("hw.inline"))
+    return true;
+
   // Check whether the module should be inlined based on heuristics.
   bool isEmpty = bodySize == 1;
   bool hasNoOutputs = module.getNumOutputPorts() == 0;

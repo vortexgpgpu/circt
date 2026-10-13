@@ -14,7 +14,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/HWPasses.h"
 #include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqPasses.h"
@@ -22,6 +24,7 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/Support/ToolOutputFile.h"
 
@@ -170,6 +173,56 @@ static FailureOr<Value> getClock(FirMemOp memory,
   return clock;
 }
 
+/// Whether `value` is computed from constants and registers without an
+/// asynchronous reset, through logic without side effects, across module
+/// boundaries: up through a module's inputs to every instance of it, and down
+/// through an instance's results into its module. The private modules crossed
+/// are added to `crossed`. A later check on the inlined design decides; this
+/// one only finds the modules that keep a memory from its address registers.
+static bool isFromRegistersAcross(Value value, hw::InstanceGraph &graph,
+                                  DenseMap<Value, bool> &cache,
+                                  SmallPtrSetImpl<Operation *> &crossed) {
+  if (auto it = cache.find(value); it != cache.end())
+    return it->second;
+  cache[value] = false;
+  bool result = false;
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    auto module = dyn_cast<hw::HWModuleOp>(arg.getOwner()->getParentOp());
+    auto *node = module ? graph.lookup(module) : nullptr;
+    if (node && module.isPrivate() && node->getNumUses() != 0) {
+      crossed.insert(module);
+      result = llvm::all_of(node->uses(), [&](igraph::InstanceRecord *use) {
+        auto inst =
+            dyn_cast_or_null<hw::InstanceOp>(use->getInstance().getOperation());
+        return inst &&
+               isFromRegistersAcross(inst.getOperand(arg.getArgNumber()), graph,
+                                     cache, crossed);
+      });
+    }
+  } else if (auto inst = value.getDefiningOp<hw::InstanceOp>()) {
+    auto module = dyn_cast_or_null<hw::HWModuleOp>(
+        graph.lookup(inst.getReferencedModuleNameAttr())
+            ->getModule()
+            .getOperation());
+    if (module && module.isPrivate()) {
+      crossed.insert(module);
+      auto output = cast<hw::OutputOp>(module.getBodyBlock()->getTerminator());
+      result = isFromRegistersAcross(
+          output.getOperand(cast<OpResult>(value).getResultNumber()), graph,
+          cache, crossed);
+    }
+  } else if (auto reg = value.getDefiningOp<FirRegOp>()) {
+    result = !reg.getIsAsync();
+  } else if (auto *op = value.getDefiningOp();
+             op && op->getNumRegions() == 0 && isMemoryEffectFree(op) &&
+             !isa<FirMemReadOp, FirMemReadWriteOp>(op)) {
+    result = llvm::all_of(op->getOperands(), [&](Value operand) {
+      return isFromRegistersAcross(operand, graph, cache, crossed);
+    });
+  }
+  return cache[value] = result;
+}
+
 void RetimeFirMemReadsPass::runOnOperation() {
   if (mode != "off" && mode != "auto") {
     getOperation().emitError("seq-retime-firmem-reads: mode must be off or "
@@ -178,10 +231,73 @@ void RetimeFirMemReadsPass::runOnOperation() {
     return signalPassFailure();
   }
 
-  std::string reportText;
+  // Whether this run converts `memory` if it can.
+  auto wanted = [&](FirMemOp memory) {
+    if (memory.getReadLatency() != 0 || memory.getWriteLatency() != 1 ||
+        disable)
+      return false;
+    auto type = memory.getType();
+    switch (getHint(memory).first) {
+    case Hint::Block:
+      return true;
+    case Hint::Distributed:
+      return false;
+    case Hint::None:
+      return mode == "auto" && type.getDepth() * type.getWidth() >= minBits;
+    }
+    return false;
+  };
+
+  // A memory's address registers may be in another module than the memory:
+  // a RAM wrapper reads at an address it receives on a port. Inline the
+  // modules between them, and only those, so that one module holds both.
+  std::string inlinedText;
+  if (inlineModules) {
+    auto &graph = getAnalysis<hw::InstanceGraph>();
+    SmallPtrSet<Operation *, 16> marked;
+    DenseMap<Value, bool> cache;
+    getOperation().walk([&](FirMemOp memory) {
+      if (!wanted(memory))
+        return;
+      for (auto *user : memory->getUsers()) {
+        auto read = dyn_cast<FirMemReadOp>(user);
+        if (!read)
+          continue;
+        SmallPtrSet<Operation *, 8> crossed;
+        if (isFromRegistersAcross(read.getAddress(), graph, cache, crossed))
+          marked.insert(crossed.begin(), crossed.end());
+      }
+    });
+    if (!marked.empty()) {
+      SmallVector<StringRef> names;
+      for (auto *module : marked) {
+        module->setAttr("hw.inline", UnitAttr::get(&getContext()));
+        names.push_back(cast<hw::HWModuleOp>(module).getModuleName());
+      }
+      llvm::sort(names);
+      inlinedText = "# inlined to bring memories and their address registers "
+                    "together: " +
+                    llvm::join(names, " ") + "\n";
+      hw::FlattenModulesOptions options;
+      options.inlineAll = false;
+      options.inlineEmpty = false;
+      options.inlineNoOutputs = false;
+      options.inlineSingleUse = false;
+      options.inlineSmall = false;
+      options.inlineMarked = true;
+      OpPassManager pm("builtin.module");
+      pm.addPass(hw::createFlattenModules(options));
+      if (failed(runPipeline(pm, getOperation())))
+        return signalPassFailure();
+      for (auto module : getOperation().getOps<hw::HWModuleOp>())
+        module->removeAttr("hw.inline");
+    }
+  }
+
+  std::string reportText = inlinedText;
   llvm::raw_string_ostream reportOS(reportText);
   bool failed = false;
-  bool changed = false;
+  bool changed = !inlinedText.empty();
 
   for (auto module : getOperation().getOps<hw::HWModuleOp>()) {
     SmallVector<FirMemOp> memories;
@@ -193,7 +309,9 @@ void RetimeFirMemReadsPass::runOnOperation() {
     for (auto memory : memories) {
       auto type = memory.getType();
       uint64_t bits = type.getDepth() * type.getWidth();
-      auto [hint, spelled] = getHint(memory);
+      auto hinted = getHint(memory);
+      auto hint = hinted.first;
+      auto spelled = hinted.second;
       std::string name = memory.getName() ? memory.getName()->str() : "";
       if (name.empty())
         name = "<unnamed>";
