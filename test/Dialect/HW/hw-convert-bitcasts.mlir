@@ -48,12 +48,30 @@ hw.module @structToInt(in %i: !hw.struct<a: i1, b: i10, c: i7>, out o : i18) {
 
 // Don't crash on unsupported types
 // NOCANON-LABEL: hw.module @unsupported
-hw.module @unsupported(in %i: i8, out o : i8) {
+hw.module @unsupported(in %i: i1, out o : i1) {
   // NOCANON: hw.bitcast
   // NOCANON: hw.bitcast
-  %a = hw.bitcast %i : (i8) -> !hw.union<foo: i8, bar: i8>
-  %o = hw.bitcast %a : (!hw.union<foo: i8, bar: i8>) -> i8
-  hw.output %o : i8
+  %a = hw.bitcast %i : (i1) -> !hw.enum<A, B>
+  %o = hw.bitcast %a : (!hw.enum<A, B>) -> i1
+  hw.output %o : i1
+}
+
+// A union is a leaf: a bitcast between it and its integer stays, for the
+// lowering of union operations, and a union inside a struct is converted to
+// and from its integer bits.
+// NOCANON-LABEL: hw.module @unionLeaf
+hw.module @unionLeaf(in %i: i8, in %j: i12, out o : i8, out s : !hw.struct<a: i4, u: !hw.union<x: i8, y: i4 offset 4>>) {
+  // NOCANON: %[[U:.+]] = hw.bitcast %i : (i8) -> !hw.union<x: i8, y: i4 offset 4>
+  // NOCANON: %[[O:.+]] = hw.bitcast %[[U]] : (!hw.union<x: i8, y: i4 offset 4>) -> i8
+  %a = hw.bitcast %i : (i8) -> !hw.union<x: i8, y: i4 offset 4>
+  %o = hw.bitcast %a : (!hw.union<x: i8, y: i4 offset 4>) -> i8
+  // NOCANON: %[[HI:.+]] = comb.extract %j from 8 : (i12) -> i4
+  // NOCANON: %[[LO:.+]] = comb.extract %j from 0 : (i12) -> i8
+  // NOCANON: %[[LU:.+]] = hw.bitcast %[[LO]] : (i8) -> !hw.union<x: i8, y: i4 offset 4>
+  // NOCANON: %[[S:.+]] = hw.struct_create (%[[HI]], %[[LU]])
+  %s = hw.bitcast %j : (i12) -> !hw.struct<a: i4, u: !hw.union<x: i8, y: i4 offset 4>>
+  // NOCANON: hw.output %[[O]], %[[S]]
+  hw.output %o, %s : i8, !hw.struct<a: i4, u: !hw.union<x: i8, y: i4 offset 4>>
 }
 
 // NOCANON-LABEL: hw.module @nop

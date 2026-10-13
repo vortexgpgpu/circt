@@ -40,6 +40,10 @@ struct HWConvertBitcastsPass
 
 // Array conversion:  Lower bits correspond to lower array index
 // Struct conversion: Higher bits correspond to lower field index
+// Union conversion:  A union is a leaf; its bits are those of the integer it
+//                    bitcasts to, each member at its offset from the LSB.
+//                    The union<->integer bitcasts are left for the lowering of
+//                    union operations (hw-aggregate-to-comb).
 
 // NOLINTNEXTLINE(misc-no-recursion)
 bool HWConvertBitcastsPass::isTypeSupported(Type ty) {
@@ -52,7 +56,9 @@ bool HWConvertBitcastsPass::isTypeSupported(Type ty) {
                         [](StructType::FieldInfo field) {
                           return isTypeSupported(field.type);
                         });
-  // TODO: Add support for: union, packed array, enum
+  if (auto unionTy = hw::type_dyn_cast<hw::UnionType>(ty))
+    return getBitWidth(unionTy) >= 0;
+  // TODO: Add support for: packed array, enum
   return false;
 }
 
@@ -92,6 +98,13 @@ static void collectIntegersRecursively(OpBuilder builder, Location loc,
     auto explodeOp = StructExplodeOp::create(builder, loc, inputVal);
     for (auto elt : explodeOp.getResults())
       collectIntegersRecursively(builder, loc, elt, accumulator);
+    return;
+  }
+
+  // Union Type
+  if (type_isa<UnionType>(inputVal.getType())) {
+    accumulator.push_back(BitcastOp::create(
+        builder, loc, builder.getIntegerType(numBits), inputVal));
     return;
   }
 
@@ -166,6 +179,10 @@ static Value constructAggregateRecursively(OpBuilder builder, Location loc,
     return StructCreateOp::create(builder, loc, targetType, elements);
   }
 
+  // Union Type
+  if (type_isa<UnionType>(targetType))
+    return BitcastOp::create(builder, loc, targetType, rawInteger);
+
   assert(false && "Unsupported type");
   return {};
 }
@@ -182,6 +199,15 @@ LogicalResult HWConvertBitcastsPass::convertBitcastOp(OpBuilder builder,
   }
   if (!(inputSupported && outputSupported))
     return failure();
+
+  // A union and its integer are already leaves of each other.
+  auto isLeaf = [](Type type) {
+    return isa<IntegerType>(type) || type_isa<UnionType>(type);
+  };
+  if (isLeaf(bitcastOp.getInput().getType()) && isLeaf(bitcastOp.getType()) &&
+      (type_isa<UnionType>(bitcastOp.getInput().getType()) ||
+       type_isa<UnionType>(bitcastOp.getType())))
+    return success();
 
   builder.setInsertionPoint(bitcastOp);
 
