@@ -1321,7 +1321,7 @@ hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
   %c0_i2 = hw.constant 0 : i2
   %lo_bit = hw.constant 0 : i1
   %hi_bit = hw.constant 1 : i1
-  // CHECK: seq.firreg %d clock {{%.+}} sym @[[S0:.+]] {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @r {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
   %1, %2 = llhd.process -> i1, i1 {
     cf.br ^bb1(%c0_i1, %false : i1, i1)
   ^bb1(%3: i1, %4: i1):
@@ -1333,7 +1333,7 @@ hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
   }
   %lo = llhd.sig.extract %r from %lo_bit : <i2> -> <i1>
   llhd.drv %lo, %1 after %0 if %2 : i1
-  // CHECK: seq.firreg %d clock {{%.+}} sym @[[S1:.+]] {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @r_0 {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
   %8, %9 = llhd.process -> i1, i1 {
     cf.br ^bb1(%c0_i1, %false : i1, i1)
   ^bb1(%3: i1, %4: i1):

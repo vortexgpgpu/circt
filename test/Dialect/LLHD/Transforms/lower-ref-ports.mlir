@@ -109,6 +109,10 @@ hw.module private @FieldSlice(in %p : !llhd.ref<!hw.struct<a: i4, b: i4>>, in %v
   %0 = llhd.sig.struct_extract %p["b"] : <!hw.struct<a: i4, b: i4>>
   llhd.drv %0, %v after %t : i4
 }
+// CHECK-LABEL: hw.module @UseFieldSlice
+// CHECK: [[B:%.+]] = llhd.sig.struct_extract %x["b"] : <!hw.struct<a: i4, b: i4>>
+// CHECK: %f.p_b = hw.instance "f" @FieldSlice(v: %v: i4) -> (p_b: i4)
+// CHECK: llhd.drv [[B]], %f.p_b
 hw.module @UseFieldSlice(in %v : i4) {
   %c0 = hw.constant 0 : i8
   %0 = hw.bitcast %c0 : (i8) -> !hw.struct<a: i4, b: i4>
