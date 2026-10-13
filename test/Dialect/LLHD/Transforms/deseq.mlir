@@ -1305,3 +1305,44 @@ hw.module @ClockExtractedFromAliasedStructExtractPosEdge(in %st: !hw.typealias<@
   // CHECK: llhd.drv {{%.+}}, [[REG]] after {{%.+}} :
   llhd.drv %sig, %out after %time if %en : i4
 }
+
+// Registers for the bits of a signal, one process per bit (Vortex
+// VX_reset_relay's copies of a reset that bound its fanout), are named after
+// the signal and carry its synthesis attributes. A `keep` request gives each an
+// inner symbol, so that the identical copies are not merged.
+// CHECK-LABEL: @KeepRegisterCopies(
+hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
+  %c0_i1 = hw.constant 0 : i1
+  %false = hw.constant false
+  %true = hw.constant true
+  %0 = llhd.constant_time <0ns, 1d, 0e>
+  // CHECK: %r = llhd.sig
+  %r = llhd.sig name "r" %c0_i2 {sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : <i2>
+  %c0_i2 = hw.constant 0 : i2
+  %lo_bit = hw.constant 0 : i1
+  %hi_bit = hw.constant 1 : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @[[S0:.+]] {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  %1, %2 = llhd.process -> i1, i1 {
+    cf.br ^bb1(%c0_i1, %false : i1, i1)
+  ^bb1(%3: i1, %4: i1):
+    llhd.wait yield (%3, %4 : i1, i1), (%clock : i1), ^bb2(%clock : i1)
+  ^bb2(%5: i1):
+    %6 = comb.xor bin %5, %true : i1
+    %7 = comb.and bin %6, %clock : i1
+    cf.cond_br %7, ^bb1(%d, %true : i1, i1), ^bb1(%c0_i1, %false : i1, i1)
+  }
+  %lo = llhd.sig.extract %r from %lo_bit : <i2> -> <i1>
+  llhd.drv %lo, %1 after %0 if %2 : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @[[S1:.+]] {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  %8, %9 = llhd.process -> i1, i1 {
+    cf.br ^bb1(%c0_i1, %false : i1, i1)
+  ^bb1(%3: i1, %4: i1):
+    llhd.wait yield (%3, %4 : i1, i1), (%clock : i1), ^bb2(%clock : i1)
+  ^bb2(%5: i1):
+    %6 = comb.xor bin %5, %true : i1
+    %7 = comb.and bin %6, %clock : i1
+    cf.cond_br %7, ^bb1(%d, %true : i1, i1), ^bb1(%c0_i1, %false : i1, i1)
+  }
+  %hi = llhd.sig.extract %r from %hi_bit : <i2> -> <i1>
+  llhd.drv %hi, %8 after %0 if %9 : i1
+}

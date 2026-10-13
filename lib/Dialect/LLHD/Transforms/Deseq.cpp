@@ -10,8 +10,10 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypeInterfaces.h"
+#include "circt/Dialect/HW/InnerSymbolNamespace.h"
 #include "circt/Dialect/LLHD/LLHDOps.h"
 #include "circt/Dialect/LLHD/LLHDPasses.h"
+#include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1452,14 +1454,54 @@ void Deseq::implementRegister(DriveInfo &drive) {
       if (auto constant = sigOp.getInit().getDefiningOp<hw::ConstantOp>())
         preset = constant.getValueAttr();
   }
+
+  // The register holds the signal, or a part of it the process drives (one
+  // `always` block per bit of a vector): it is named after the signal and
+  // carries the signal's synthesis attributes.
+  Value root = drive.op.getSignal();
+  while (auto *op = root.getDefiningOp()) {
+    if (!isa<SigExtractOp, SigArrayGetOp, SigArraySliceOp, SigStructExtractOp>(
+            op))
+      break;
+    root = op->getOperand(0);
+  }
+  auto rootOp = root.getDefiningOp<llhd::SignalOp>();
+  if (!name && rootOp)
+    name = rootOp.getNameAttr();
   if (!name)
     name = builder.getStringAttr("");
 
+  // A register the design asks to keep (`(* keep *)`, `dont_touch`, ...), such
+  // as one of several copies that bound a fanout, gets an inner symbol, so
+  // that it is neither merged with its copies nor removed.
+  ArrayAttr svAttrs = rootOp ? sv::getSVAttributes(rootOp) : ArrayAttr{};
+  hw::InnerSymAttr innerSym;
+  if (svAttrs &&
+      llvm::any_of(
+          svAttrs.getAsRange<sv::SVAttributeAttr>(),
+          [](sv::SVAttributeAttr attr) {
+            auto attrName = attr.getName().getValue().lower();
+            if (attrName != "keep" && attrName != "dont_touch" &&
+                attrName != "preserve" && attrName != "syn_keep" &&
+                attrName != "syn_preserve")
+              return false;
+            if (!attr.getExpression())
+              return true;
+            auto value =
+                attr.getExpression().getValue().trim().trim('"').lower();
+            return value != "false" && value != "no" && value != "0";
+          })) {
+    hw::InnerSymbolNamespace ns(process->getParentOfType<hw::HWModuleOp>());
+    innerSym = hw::InnerSymAttr::get(builder.getStringAttr(
+        ns.newName(name.getValue().empty() ? "reg" : name.getValue())));
+  }
+
   // Create the register op.
   auto reg =
-      seq::FirRegOp::create(builder, loc, value, clock, name,
-                            hw::InnerSymAttr{}, preset, reset, resetValue,
-                            /*isAsync=*/reset != Value{});
+      seq::FirRegOp::create(builder, loc, value, clock, name, innerSym, preset,
+                            reset, resetValue, /*isAsync=*/reset != Value{});
+  if (svAttrs && !svAttrs.empty())
+    sv::setSVAttributes(reg, svAttrs);
 
   // If the register has an enable, insert a self-mux in front of the register.
   // Set the `bin` flag on the mux specifically to make up for a subtle
