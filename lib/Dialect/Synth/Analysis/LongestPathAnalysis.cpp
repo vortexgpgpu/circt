@@ -699,9 +699,24 @@ private:
     return markStartPoint(op, bitPos, results);
   }
 
+  // A read of latency 0 (a distributed RAM) is the stored word, a start
+  // point, selected by a tree of multiplexers on the address; a registered
+  // read starts paths at its output.
   LogicalResult visit(seq::FirMemReadOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results) {
-    return markStartPoint(op, bitPos, results);
+    if (failed(markStartPoint(op, bitPos, results)))
+      return failure();
+    auto memory = op.getMemory().getDefiningOp<seq::FirMemOp>();
+    if (!memory || memory.getReadLatency() != 0)
+      return success();
+    int64_t delay = std::max<int64_t>(
+        1, llvm::Log2_64_Ceil(memory.getType().getDepth()));
+    for (size_t i = 0, e = getBitWidth(op.getAddress()); i < e; ++i)
+      if (failed(addEdge(op.getAddress(), i, delay, results)))
+        return failure();
+    if (auto enable = op.getEnable())
+      return addEdge(enable, 0, 1, results);
+    return success();
   }
 
   LogicalResult visit(seq::FirMemReadWriteOp op, size_t bitPos,
@@ -717,6 +732,9 @@ private:
                         SmallVectorImpl<OpenPath> &results);
   LogicalResult markStartPoint(Value value, size_t bitPos,
                                SmallVectorImpl<OpenPath> &results);
+  LogicalResult recordEndPoint(Value endPoint, size_t endPointBitPos,
+                               Value value, size_t bitPos);
+  LogicalResult markEndPointFromAll(Value endPoint, Value from);
   LogicalResult markRegEndPoint(Value endPoint, Value start, Value reset = {},
                                 Value resetValue = {}, Value enable = {});
 
@@ -803,26 +821,49 @@ void LocalVisitor::waitUntilDone() const {
   cv.wait(lock, [this] { return done.load(); });
 }
 
+/// Records the paths to bit `bitPos` of `value` as reaching bit
+/// `endPointBitPos` of the end point `endPoint`.
+LogicalResult LocalVisitor::recordEndPoint(Value endPoint,
+                                           size_t endPointBitPos, Value value,
+                                           size_t bitPos) {
+  auto result = getOrComputePaths(value, bitPos);
+  if (failed(result))
+    return failure();
+  for (auto &path : *result) {
+    if (auto blockArg = dyn_cast<BlockArgument>(path.startPoint.value)) {
+      // Not closed.
+      putUnclosedResult(
+          {{}, endPoint, endPointBitPos}, path.delay, path.history,
+          fromInputPortToEndPoint[{blockArg, path.startPoint.bitPos}]);
+    } else {
+      // If the start point is not a port, record to the results.
+      endPointResults[{{}, endPoint, endPointBitPos}].push_back(path);
+    }
+  }
+  return success();
+}
+
+/// Records every bit of `from` as reaching every bit of `endPoint`: a
+/// memory's address, enable and mask select which stored bits change.
+LogicalResult LocalVisitor::markEndPointFromAll(Value endPoint, Value from) {
+  if (!from)
+    return success();
+  for (size_t i = 0, e = getBitWidth(endPoint); i < e; ++i) {
+    if (failed(getOrComputePaths(endPoint, i)))
+      return failure();
+    for (size_t j = 0, f = getBitWidth(from); j < f; ++j)
+      if (failed(recordEndPoint(endPoint, i, from, j)))
+        return failure();
+  }
+  return success();
+}
+
 LogicalResult LocalVisitor::markRegEndPoint(Value endPoint, Value start,
                                             Value reset, Value resetValue,
                                             Value enable) {
   auto bitWidth = getBitWidth(endPoint);
   auto record = [&](size_t endPointBitPos, Value value, size_t bitPos) {
-    auto result = getOrComputePaths(value, bitPos);
-    if (failed(result))
-      return failure();
-    for (auto &path : *result) {
-      if (auto blockArg = dyn_cast<BlockArgument>(path.startPoint.value)) {
-        // Not closed.
-        putUnclosedResult(
-            {{}, endPoint, endPointBitPos}, path.delay, path.history,
-            fromInputPortToEndPoint[{blockArg, path.startPoint.bitPos}]);
-      } else {
-        // If the start point is not a port, record to the results.
-        endPointResults[{{}, endPoint, endPointBitPos}].push_back(path);
-      }
-    }
-    return success();
+    return recordEndPoint(endPoint, endPointBitPos, value, bitPos);
   };
 
   // Get paths for each bit, and record them.
@@ -1304,17 +1345,38 @@ LogicalResult LocalVisitor::initializeAndRun() {
                                      op.getResetValue());
             })
             .Case<seq::FirMemWriteOp>([&](auto op) {
-              // TODO: Add address.
-              return markRegEndPoint(op.getMemory(), op.getData(), {}, {},
-                                     op.getEnable());
+              return failure(
+                  failed(markRegEndPoint(op.getMemory(), op.getData(), {}, {},
+                                         op.getEnable())) ||
+                  failed(markEndPointFromAll(op.getMemory(),
+                                             op.getAddress())) ||
+                  failed(markEndPointFromAll(op.getMemory(), op.getMask())));
             })
             .Case<seq::FirMemReadWriteOp>([&](seq::FirMemReadWriteOp op) {
-              // TODO: Add address.
-              return markRegEndPoint(op.getMemory(), op.getWriteData(), {}, {},
-                                     op.getEnable());
+              return failure(
+                  failed(markRegEndPoint(op.getMemory(), op.getWriteData(), {},
+                                         {}, op.getEnable())) ||
+                  failed(markEndPointFromAll(op.getMemory(),
+                                             op.getAddress())) ||
+                  failed(markEndPointFromAll(op.getMemory(), op.getMode())) ||
+                  failed(markEndPointFromAll(op.getMemory(), op.getMask())));
+            })
+            .Case<seq::FirMemReadOp>([&](seq::FirMemReadOp op) {
+              // A registered read samples its address and enable: they end
+              // paths at the read's output.
+              auto memory = op.getMemory().getDefiningOp<seq::FirMemOp>();
+              if (memory && memory.getReadLatency() != 0 &&
+                  (failed(markEndPointFromAll(op, op.getAddress())) ||
+                   failed(markEndPointFromAll(op, op.getEnable()))))
+                return failure();
+              Value result = op.getResult();
+              for (size_t i = 0, e = getBitWidth(result); i < e; ++i)
+                if (failed(getOrComputePaths(result, i)))
+                  return failure();
+              return success();
             })
             .Case<BooleanLogicOpInterface, comb::AndOp, comb::OrOp, comb::XorOp,
-                  comb::MuxOp, seq::FirMemReadOp>([&](auto op) {
+                  comb::MuxOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               Value result = op->getResult(0);
