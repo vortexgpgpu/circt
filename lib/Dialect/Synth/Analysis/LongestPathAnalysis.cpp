@@ -1356,9 +1356,14 @@ OperationAnalyzer::getOrComputeLocalVisitor(Operation *op) {
   auto opName = op->getName();
   auto functionType = getFunctionTypeForOp(op);
   auto key = std::make_pair(opName, functionType);
+  // An operation the pipeline cannot lower is cached as a null visitor, so
+  // that it fails once rather than at every query.
   auto it = cache.find(key);
-  if (it != cache.end())
+  if (it != cache.end()) {
+    if (!it->second)
+      return failure();
     return it->second.get();
+  }
 
   SmallVector<hw::PortInfo> ports;
   // Helper to convert types into integer types.
@@ -1452,8 +1457,16 @@ OperationAnalyzer::getOrComputeLocalVisitor(Operation *op) {
            << "Failed to initialize pipeline, possibly passes used in the "
               "analysis are not registered";
 
-  if (failed(passManager->run(moduleOp->getOperation())))
-    return mlir::emitError(loc) << "Failed to run lowering pipeline";
+  // The caller treats an operation it cannot analyze as a start point, so a
+  // lowering that fails is no error of the design: keep its diagnostics out.
+  {
+    mlir::ScopedDiagnosticHandler quiet(
+        op->getContext(), [](Diagnostic &) { return success(); });
+    if (failed(passManager->run(moduleOp->getOperation()))) {
+      cache.insert({key, nullptr});
+      return failure();
+    }
+  }
 
   // Create LocalVisitor to analyze the converted AIG module
   auto localVisitor = std::make_unique<LocalVisitor>(hwModule, &ctx);
