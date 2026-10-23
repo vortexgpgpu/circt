@@ -742,6 +742,12 @@ private:
   mutable std::condition_variable cv;
   mutable std::mutex mutex;
 
+  // Once the visitor's own walk is done, the threads of every module that
+  // instantiates this one read and extend its cache concurrently, for the
+  // instance results the walk did not compute. Recursive: a computation
+  // recurses within the visitor.
+  mutable std::recursive_mutex cacheMutex;
+
   // A flag to indicate the module is top-level.
   bool topLevel = false;
 };
@@ -761,6 +767,9 @@ LocalVisitor::LocalVisitor(hw::HWModuleOp module, Context *ctx)
 
 ArrayRef<OpenPath> LocalVisitor::getCachedPaths(Value value,
                                                 size_t bitPos) const {
+  std::unique_lock<std::recursive_mutex> lock(cacheMutex, std::defer_lock);
+  if (done)
+    lock.lock();
   std::pair<Value, size_t> valueAndBitPos(value, bitPos);
   auto leader = ec.findLeader(valueAndBitPos);
   if (leader != ec.member_end()) {
@@ -1095,6 +1104,9 @@ LogicalResult LocalVisitor::visit(mlir::BlockArgument arg, size_t bitPos,
 
 FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputePaths(Value value,
                                                               size_t bitPos) {
+  std::unique_lock<std::recursive_mutex> lock(cacheMutex, std::defer_lock);
+  if (done)
+    lock.lock();
   if (auto *op = value.getDefiningOp())
     if (op->hasTrait<OpTrait::ConstantLike>())
       return ArrayRef<OpenPath>{};
