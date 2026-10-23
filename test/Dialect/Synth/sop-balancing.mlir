@@ -41,3 +41,15 @@ hw.module @balance(in %a: i1, in %b: i1, in %c: i1, in %d: i1, in %e: i1, in %f:
     hw.output %5 : i1
 }
 
+
+// A cut whose function is constant balances to the constant: t = ~(a & ~a)
+// holds for every input.
+// CHECK-LABEL: hw.module @constant_cut
+// CHECK: %[[TRUE:.+]] = hw.constant true
+// CHECK: hw.output %{{.+}}, %[[TRUE]] : i1, i1
+hw.module @constant_cut(in %a : i1, in %b : i1, out f : i1, out t : i1) {
+    %and = synth.aig.and_inv %a, not %a : i1
+    %f = synth.aig.and_inv %and, %b : i1
+    %t = synth.aig.and_inv not %f, not %and : i1
+    hw.output %f, %t : i1, i1
+}

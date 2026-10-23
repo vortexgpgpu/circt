@@ -116,8 +116,9 @@ Value buildBalancedSOP(OpBuilder &builder, Location loc, const SOPForm &sop,
             inputs[i], inputArrivalTimes[i], cube.isLiteralInverted(i),
             /*valueNumbering=*/valueNumbering++));
 
+    // A cube without literals holds for every input: the function is true.
     if (literals.empty())
-      continue;
+      return hw::ConstantOp::create(builder, loc, builder.getI1Type(), 1);
 
     // Get product term, and flip the inversion to construct OR afterwards.
     productTerms.push_back(
@@ -127,7 +128,9 @@ Value buildBalancedSOP(OpBuilder &builder, Location loc, const SOPForm &sop,
     literals.clear();
   }
 
-  assert(!productTerms.empty() && "No product terms");
+  // No cube: the function is false.
+  if (productTerms.empty())
+    return hw::ConstantOp::create(builder, loc, builder.getI1Type(), 0);
 
   auto andOfInverted =
       buildBalancedAndTree(builder, loc, productTerms, valueNumbering)
