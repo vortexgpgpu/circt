@@ -433,6 +433,12 @@ struct CombMuxOpToSynthConversion : OpConversionPattern<MuxOp> {
     Value trueVal = adaptor.getTrueValue();
     Value falseVal = adaptor.getFalseValue();
 
+    // A zero-width mux selects nothing.
+    if (hw::getBitWidth(op.getType()) == 0) {
+      rewriter.replaceOp(op, falseVal);
+      return success();
+    }
+
     if (!op.getType().isInteger()) {
       auto widthType = rewriter.getIntegerType(hw::getBitWidth(op.getType()));
       trueVal =

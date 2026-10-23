@@ -71,3 +71,11 @@ func.func @parity(%arg0: i4) -> i1 {
   %0 = comb.parity %arg0 : i4
   return %0 : i1
 }
+
+// A zero-width mux selects nothing; it lowers to its operand.
+// CHECK-LABEL: @zero_width_mux
+// CHECK-NEXT: hw.output %b : i0
+hw.module @zero_width_mux(in %c: i1, in %a: i0, in %b: i0, out out: i0) {
+  %0 = comb.mux %c, %a, %b : i0
+  hw.output %0 : i0
+}
