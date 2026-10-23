@@ -18,7 +18,7 @@ hw.module @AddMul(in %x: i4, in %y: i4, in %z: i4, out out: i4) {
   // COMMON-NEXT: %c5_i4 = hw.constant 5 : i4
   // COMMON-NEXT: %[[ADD:.+]] = comb.add %x, %y : i4
   // TIMING-NEXT: %[[MUL:.+]] = comb.mul %c5_i4, %z : i4
-  // TIMING-NEXT: %[[RES:.+]] = comb.mul %[[ADD]], %[[MUL]] : i4
+  // TIMING-NEXT: %[[RES:.+]] = comb.mul %[[MUL]], %[[ADD]] : i4
   // TIMING-NEXT: hw.output %[[RES]] : i4
   // NO-TIMING-NEXT: %[[MUL:.+]] = comb.mul %c5_i4, %[[ADD]] : i4
   // NO-TIMING-NEXT: %[[RES:.+]] = comb.mul %z, %[[MUL]] : i4

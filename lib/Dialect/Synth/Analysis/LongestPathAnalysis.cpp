@@ -546,10 +546,12 @@ private:
   // different type signatures.
   static mlir::FunctionType getFunctionTypeForOp(Operation *op);
 
-  // Cache mapping (operation_name, function_type) -> analyzed LocalVisitor
-  // This avoids recomputing analysis for operations with identical signatures
-  llvm::DenseMap<std::pair<mlir::OperationName, mlir::FunctionType>,
-                 std::unique_ptr<LocalVisitor>>
+  // Cache mapping (operation_name, function_type, constant operands) ->
+  // analyzed LocalVisitor, a constant operand being its value and a variable
+  // one unit: a division by a constant is not a divider.
+  llvm::DenseMap<
+      std::tuple<mlir::OperationName, mlir::FunctionType, mlir::ArrayAttr>,
+      std::unique_ptr<LocalVisitor>>
       cache;
 
   // Standard conversion pipeline: HW -> Comb -> AIG -> cleanup passes
@@ -1367,7 +1369,14 @@ OperationAnalyzer::getOrComputeLocalVisitor(Operation *op) {
   // Check cache first.
   auto opName = op->getName();
   auto functionType = getFunctionTypeForOp(op);
-  auto key = std::make_pair(opName, functionType);
+  SmallVector<Attribute> constants;
+  for (auto operand : op->getOperands()) {
+    auto constant = operand.getDefiningOp<hw::ConstantOp>();
+    constants.push_back(constant ? Attribute(constant.getValueAttr())
+                                 : UnitAttr::get(op->getContext()));
+  }
+  auto constantsAttr = ArrayAttr::get(op->getContext(), constants);
+  auto key = std::make_tuple(opName, functionType, constantsAttr);
   // An operation the pipeline cannot lower is cached as a null visitor, so
   // that it fails once rather than at every query.
   auto it = cache.find(key);
@@ -1437,6 +1446,14 @@ OperationAnalyzer::getOrComputeLocalVisitor(Operation *op) {
   for (auto arg : hwModule.getBodyBlock()->getArguments()) {
     Value input = arg;
     auto idx = arg.getArgNumber();
+
+    // A constant operand stays a constant, so the lowering sees it (a
+    // division by a constant is not a divider); its port carries no path.
+    if (auto value = dyn_cast<IntegerAttr>(constants[idx])) {
+      cloned->setOperand(idx,
+                         hw::ConstantOp::create(builder, op->getLoc(), value));
+      continue;
+    }
 
     // Insert bitcast if input port type differs from operand type
     if (input.getType() != cloned->getOperand(idx).getType())
