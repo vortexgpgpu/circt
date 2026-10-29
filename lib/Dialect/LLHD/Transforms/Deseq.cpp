@@ -95,6 +95,23 @@ static Value canonicalizeBlockArg(BlockArgument arg,
   return candidate ? candidate : arg;
 }
 
+/// The bits of a constant integer or aggregate value, as an integer attribute
+/// of its width, or null if the value is not a constant.
+static IntegerAttr getConstantBits(Value value) {
+  Attribute attr;
+  if (!matchPattern(value, m_Constant(&attr)))
+    return {};
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return intAttr;
+  APInt bits;
+  auto fields = dyn_cast<ArrayAttr>(attr);
+  if (!fields ||
+      failed(hw::aggregateAttrToAPInt(value.getType(), fields, bits)))
+    return {};
+  return IntegerAttr::get(
+      IntegerType::get(value.getContext(), bits.getBitWidth()), bits);
+}
+
 /// Convert a value into a (base, fieldID, bitID, bitWidth) key.
 ///
 /// - `fieldID == 0` denotes the whole value.
@@ -1451,8 +1468,7 @@ void Deseq::implementRegister(DriveInfo &drive) {
   if (auto sigOp = drive.op.getSignal().getDefiningOp<llhd::SignalOp>()) {
     name = sigOp.getNameAttr();
     if (sigOp.getInit())
-      if (auto constant = sigOp.getInit().getDefiningOp<hw::ConstantOp>())
-        preset = constant.getValueAttr();
+      preset = getConstantBits(sigOp.getInit());
   }
 
   // The register holds the signal, or a part of it the process drives (one

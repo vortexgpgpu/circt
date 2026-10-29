@@ -15,6 +15,11 @@
 // memory with column write enables, coded as one conditional write per column,
 // becomes a memory with a write mask.
 //
+// The memory starts out as the register does: a register preset that sets
+// every element to the same value becomes the preset of the memory, and the
+// file a register array is loaded from becomes the file the memory is loaded
+// from.
+//
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -80,6 +85,10 @@ public:
   /// Whether the register is used as a memory; fills in the accessors below.
   bool analyze();
 
+  /// Whether the register must become a memory: a register cannot be loaded
+  /// from a file.
+  bool hasFileInit() { return reg->hasAttr(getRegFileInitAttrName()); }
+
   /// Replace the register by a memory.
   void createFirMemory(SmallVectorImpl<Operation *> &opsToErase);
 
@@ -97,6 +106,8 @@ private:
 
   FirRegOp reg;
   uint64_t depth = 0, width = 0;
+  /// The value every element of the register starts out with, if any.
+  IntegerAttr preset;
   Value writeAddr;
   SmallVector<ElementWrite> writes;
   /// Indexed by write, then by bit of the element.
@@ -303,6 +314,17 @@ bool MemoryAnalysis::analyze() {
   width = cast<IntegerType>(arrayType.getElementType()).getWidth();
   if (width == 0)
     return false;
+
+  // A memory starts out with every word holding the same value, or holding
+  // nothing in particular.
+  if (auto regPreset = reg.getPresetAttr()) {
+    APInt word = regPreset.getValue().trunc(width);
+    if (APInt::getSplat(depth * width, word) != regPreset.getValue()) {
+      LLVM_DEBUG(llvm::dbgs() << "  Elements preset to different values\n");
+      return false;
+    }
+    preset = IntegerAttr::get(IntegerType::get(reg.getContext(), width), word);
+  }
 
   auto peeledWrites = peelWrites(reg.getNext());
   if (failed(peeledWrites) || peeledWrites->empty()) {
@@ -565,23 +587,41 @@ void MemoryAnalysis::createFirMemory(SmallVectorImpl<Operation *> &opsToErase) {
   if (!memName || memName.empty())
     memName = builder.getStringAttr("mem");
   auto memType = FirMemType::get(builder.getContext(), depth, width, maskWidth);
+  auto fileInit =
+      reg->getAttrOfType<seq::FirMemInitAttr>(getRegFileInitAttrName());
   auto firMem = seq::FirMemOp::create(
       builder, memType, readLatency, /*writeLatency=*/1, readUnderWrite,
       /*writeUnderWrite=*/seq::WUW::Undefined,
       /*name=*/memName, /*innerSym=*/hw::InnerSymAttr{},
-      /*init=*/seq::FirMemInitAttr{}, /*prefix=*/StringAttr{},
-      /*outputFile=*/Attribute{});
+      /*init=*/fileInit, /*prefix=*/StringAttr{},
+      /*outputFile=*/Attribute{}, preset);
   // Carry over dialect attributes such as the `(* ram_style *)` the register
-  // was declared with.
+  // was declared with, but not the file initialization, which the memory has
+  // taken over.
   firMem->setDialectAttrs(reg->getDialectAttrs());
+  firMem->removeAttr(getRegFileInitAttrName());
+  firMem->removeAttr(getRegFileInitReversedAttrName());
 
   // FIRRTL currently uses a 1-bit address for a single element memory,
   // however HW arrays use 0-bit addresses. To bridge this gap, create a 1-bit
-  // address equal to 0 if our address is 0-bit.
+  // address equal to 0 if our address is 0-bit. A file loads a memory from its
+  // first word up: one that loads the register from its last element down
+  // loads the memory in the order of the elements reversed.
+  bool reversed = fileInit && reg->hasAttr(getRegFileInitReversedAttrName());
   auto fixZeroWidthAddr = [&](Value addr) -> Value {
     if (addr.getType().getIntOrFloatBitWidth() == 0)
       return hw::ConstantOp::create(builder, builder.getI1Type(), 0);
-    return addr;
+    if (!reversed)
+      return addr;
+    // An ascending range already indexes the array in reverse, which the
+    // memory undoes.
+    APInt last;
+    if (auto sub = addr.getDefiningOp<comb::SubOp>();
+        sub && matchPattern(sub.getLhs(), mlir::m_ConstantInt(&last)) &&
+        last == depth - 1)
+      return sub.getRhs();
+    return builder.createOrFold<comb::SubOp>(
+        hw::ConstantOp::create(builder, addr.getType(), depth - 1), addr, true);
   };
 
   // The ops the memory replaces, collected before any rewriting: the new
@@ -684,8 +724,13 @@ void RegOfVecToMemPass::runOnOperation() {
   SmallVector<Operation *> opsToErase;
   for (auto reg : arrayRegs) {
     MemoryAnalysis analysis(reg);
-    if (analysis.analyze())
+    if (analysis.analyze()) {
       analysis.createFirMemory(opsToErase);
+    } else if (analysis.hasFileInit()) {
+      reg.emitError("register array loaded from a file is not a memory; only "
+                    "a memory can be loaded from a file");
+      signalPassFailure();
+    }
   }
 
   for (auto *op : opsToErase)

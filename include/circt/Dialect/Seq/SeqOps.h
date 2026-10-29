@@ -59,6 +59,8 @@ struct FirMemory {
   StringRef initFilename;
   bool initIsBinary;
   bool initIsInline;
+  /// The value every word starts out with, if any.
+  IntegerAttr preset;
 
   FirMemory(hw::HWModuleGeneratedOp op);
 };
@@ -79,6 +81,18 @@ Value unwrapImmutableValue(mlir::TypedValue<seq::ImmutableType> immutableVal);
 // Return null if there is no initial op in the block. Return the initial op
 // otherwise.
 FailureOr<seq::InitialOp> mergeInitialOps(Block *block);
+
+/// A register array whose initial contents are loaded from a file, as
+/// `$readmemh`/`$readmemb` load them into a memory, records the file with this
+/// attribute, a `#seq.firmem.init`, until it becomes a `seq.firmem` that takes
+/// the initialization over. A register cannot be loaded from a file otherwise.
+inline StringRef getRegFileInitAttrName() { return "seq.firmem_init"; }
+
+/// Marks a register array with a file initialization whose words load from its
+/// last element down to its first, rather than from its first element up.
+inline StringRef getRegFileInitReversedAttrName() {
+  return "seq.firmem_init_reversed";
+}
 
 } // namespace seq
 } // namespace circt

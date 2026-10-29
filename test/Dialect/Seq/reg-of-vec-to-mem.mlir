@@ -211,3 +211,59 @@ hw.module @element_observed(in %clk : i1, in %raddr : i2, in %waddr : i2, in %da
   %mem = seq.firreg %next clock %clock : !hw.array<4xi8>
   hw.output %read, %keep : i8, i4
 }
+
+// A register array whose elements are all preset to one value is a memory
+// whose words all start out with it.
+// CHECK-LABEL: hw.module @preset_uniform
+// CHECK: %mem = seq.firmem 0, 1, undefined, undefined {preset = 5 : i8} : <4 x 8, mask 1>
+// CHECK-NOT: seq.firreg
+hw.module @preset_uniform(in %clk : i1, in %raddr : i2, in %waddr : i2, in %data : i8, in %we : i1, out out : i8) {
+  %clock = seq.to_clock %clk
+  %read = hw.array_get %mem[%raddr] : !hw.array<4xi8>, i2
+  %write = hw.array_inject %mem[%waddr], %data : !hw.array<4xi8>, i2
+  %next = comb.mux %we, %write, %mem : !hw.array<4xi8>
+  %mem = seq.firreg %next clock %clock preset 84215045 : !hw.array<4xi8>
+  hw.output %read : i8
+}
+
+// Elements preset to different values keep the register, which holds them.
+// CHECK-LABEL: hw.module @preset_mixed
+// CHECK-NOT: seq.firmem
+// CHECK: %mem = seq.firreg {{%.+}} clock {{%.+}} preset 258 : !hw.array<4xi8>
+hw.module @preset_mixed(in %clk : i1, in %raddr : i2, in %waddr : i2, in %data : i8, in %we : i1, out out : i8) {
+  %clock = seq.to_clock %clk
+  %read = hw.array_get %mem[%raddr] : !hw.array<4xi8>, i2
+  %write = hw.array_inject %mem[%waddr], %data : !hw.array<4xi8>, i2
+  %next = comb.mux %we, %write, %mem : !hw.array<4xi8>
+  %mem = seq.firreg %next clock %clock preset 258 : !hw.array<4xi8>
+  hw.output %read : i8
+}
+
+// A register array loaded from a file is a memory loaded from it. One loaded
+// from its last element down is addressed in reverse, so that the file loads
+// the memory from its first word up.
+// CHECK-LABEL: hw.module @file_init
+// CHECK: %mem = seq.firmem 0, 1, undefined, undefined {init = #seq.firmem.init<"init.hex", false, true>} : <4 x 8, mask 1>
+// CHECK: seq.firmem.read_port %mem[%raddr]
+// CHECK: seq.firmem.write_port %mem[%waddr]
+// CHECK: %rev = seq.firmem 0, 1, undefined, undefined {init = #seq.firmem.init<"init.bin", true, true>} : <4 x 8, mask 1>
+// CHECK: [[C3:%.+]] = hw.constant -1 : i2
+// CHECK: [[RADDR:%.+]] = comb.sub bin [[C3]], %raddr : i2
+// CHECK: seq.firmem.read_port %rev[[[RADDR]]]
+// CHECK: [[C3_2:%.+]] = hw.constant -1 : i2
+// CHECK: [[WADDR:%.+]] = comb.sub bin [[C3_2]], %waddr : i2
+// CHECK: seq.firmem.write_port %rev[[[WADDR]]]
+// CHECK-NOT: seq.firreg
+// CHECK-NOT: seq.firmem_init
+hw.module @file_init(in %clk : i1, in %raddr : i2, in %waddr : i2, in %data : i8, in %we : i1, out out : i8, out rev : i8) {
+  %clock = seq.to_clock %clk
+  %read = hw.array_get %mem[%raddr] : !hw.array<4xi8>, i2
+  %write = hw.array_inject %mem[%waddr], %data : !hw.array<4xi8>, i2
+  %next = comb.mux %we, %write, %mem : !hw.array<4xi8>
+  %mem = seq.firreg %next clock %clock {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>} : !hw.array<4xi8>
+  %read2 = hw.array_get %rev[%raddr] : !hw.array<4xi8>, i2
+  %write2 = hw.array_inject %rev[%waddr], %data : !hw.array<4xi8>, i2
+  %next2 = comb.mux %we, %write2, %rev : !hw.array<4xi8>
+  %rev = seq.firreg %next2 clock %clock {seq.firmem_init = #seq.firmem.init<"init.bin", true, true>, seq.firmem_init_reversed} : !hw.array<4xi8>
+  hw.output %read, %read2 : i8, i8
+}

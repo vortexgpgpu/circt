@@ -438,3 +438,27 @@ hw.module @clock_div(in %clock : !seq.clock, out div_combined: !seq.clock) {
   // CHECK: hw.output %[[DIV3]]
   hw.output %div2 : !seq.clock
 }
+
+// A memory that is only read holds the value its words start out with.
+// CHECK-LABEL: @firmem_read_only_preset
+hw.module @firmem_read_only_preset(in %clock : !seq.clock, in %addr : i2, out out : i8) {
+  // CHECK-NOT: seq.firmem
+  // CHECK: [[C5:%.+]] = hw.constant 5 : i8
+  // CHECK: hw.output [[C5]]
+  %mem = seq.firmem 0, 1, undefined, undefined {preset = 5 : i8} : <4 x 8>
+  %0 = seq.firmem.read_port %mem[%addr], clock %clock : <4 x 8>
+  hw.output %0 : i8
+}
+
+// A register array loaded from a file holds contents that are not known: it
+// is not replaced by a constant. Dropping a constant zero reset keeps the
+// file it is loaded from.
+// CHECK-LABEL: @firreg_file_init
+hw.module @firreg_file_init(in %clock : !seq.clock, in %d : !hw.array<4xi8>, out a : !hw.array<4xi8>, out b : !hw.array<4xi8>) {
+  %false = hw.constant false
+  // CHECK: %held = seq.firreg %held clock %clock {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>} : !hw.array<4xi8>
+  %held = seq.firreg %held clock %clock {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>} : !hw.array<4xi8>
+  // CHECK: %reset = seq.firreg %d clock %clock {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>} : !hw.array<4xi8>
+  %reset = seq.firreg %d clock %clock reset sync %false, %d {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>} : !hw.array<4xi8>
+  hw.output %held, %reset : !hw.array<4xi8>, !hw.array<4xi8>
+}

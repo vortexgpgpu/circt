@@ -605,16 +605,19 @@ LogicalResult FirRegOp::canonicalize(FirRegOp op, PatternRewriter &rewriter) {
   if (auto reset = op.getReset()) {
     if (auto constOp = reset.getDefiningOp<hw::ConstantOp>()) {
       if (constOp.getValue().isZero()) {
-        rewriter.replaceOpWithNewOp<FirRegOp>(
+        auto attrs = op->getDiscardableAttrDictionary();
+        auto newOp = rewriter.replaceOpWithNewOp<FirRegOp>(
             op, op.getNext(), op.getClk(), op.getNameAttr(),
             op.getInnerSymAttr(), op.getPresetAttr());
+        newOp->setDiscardableAttrs(attrs);
         return success();
       }
     }
   }
 
-  // If the register has a symbol, we can't optimize it away.
-  if (op.getInnerSymAttr())
+  // If the register has a symbol, we can't optimize it away. Neither can we
+  // if it is loaded from a file, whose contents are not known.
+  if (op.getInnerSymAttr() || op->hasAttr(getRegFileInitAttrName()))
     return failure();
 
   // Replace a register with a trivial feedback or constant clock with a
@@ -919,21 +922,33 @@ LogicalResult FirMemOp::canonicalize(FirMemOp op, PatternRewriter &rewriter) {
   }
 
   if (readOnly && !op.getInit()) {
-    // Replace all read ports with a constant 0.
+    // Replace all read ports with the value every word starts out with, or a
+    // constant 0.
     for (auto *user : llvm::make_early_inc_range(op->getUsers())) {
       auto readOp = cast<FirMemReadOp>(user);
-      Value zero = hw::ConstantOp::create(
+      auto preset = op.getPresetAttr();
+      Value value = hw::ConstantOp::create(
           rewriter, readOp.getLoc(),
-          APInt::getZero(hw::getBitWidth(readOp.getType())));
-      if (readOp.getType() != zero.getType())
-        zero = hw::BitcastOp::create(rewriter, readOp.getLoc(),
-                                     readOp.getType(), zero);
-      rewriter.replaceOp(readOp, zero);
+          preset ? preset.getValue()
+                 : APInt::getZero(hw::getBitWidth(readOp.getType())));
+      if (readOp.getType() != value.getType())
+        value = hw::BitcastOp::create(rewriter, readOp.getLoc(),
+                                      readOp.getType(), value);
+      rewriter.replaceOp(readOp, value);
     }
     rewriter.eraseOp(op);
     return success();
   }
   return failure();
+}
+
+LogicalResult FirMemOp::verify() {
+  if (auto preset = getPresetAttr())
+    if (preset.getValue().getBitWidth() != getType().getWidth())
+      return emitOpError("preset width ")
+             << preset.getValue().getBitWidth()
+             << " does not match the memory width " << getType().getWidth();
+  return success();
 }
 
 void FirMemOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
@@ -1148,6 +1163,7 @@ FirMemory::FirMemory(hw::HWModuleGeneratedOp op) {
   initFilename = op->getAttrOfType<StringAttr>("initFilename").getValue();
   initIsBinary = op->getAttrOfType<BoolAttr>("initIsBinary").getValue();
   initIsInline = op->getAttrOfType<BoolAttr>("initIsInline").getValue();
+  preset = op->getAttrOfType<IntegerAttr>("preset");
 }
 
 LogicalResult InitialOp::verify() {

@@ -572,15 +572,8 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
       reg.setInnerSymAttr(hw::InnerSymAttr::get(
           b.getStringAttr(moduleNamespace.newName(reg.getName()))));
 
-    if (mem.initIsInline) {
-      sv::IfDefOp::create(b, "ENABLE_INITIAL_MEM_", [&]() {
-        sv::InitialOp::create(b, [&]() {
-          sv::ReadMemOp::create(b, reg, mem.initFilename,
-                                mem.initIsBinary ? MemBaseTypeAttr::MemBaseBin
-                                                 : MemBaseTypeAttr::MemBaseHex);
-        });
-      });
-    } else {
+    // An inline file is loaded below, with the preset.
+    if (!mem.initIsInline) {
       OpBuilder::InsertionGuard guard(b);
 
       // Assign a name to the bound module.
@@ -645,6 +638,46 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     }
   }
 
+  // Initialize the memory with the contents it is declared with: every word
+  // set to the preset, then the words the inline file holds. These are the
+  // contents of the memory, which synthesis loads into a block RAM too, not a
+  // simulation aid such as randomization: like the load from a bound module
+  // above, they are not guarded by `ENABLE_INITIAL_MEM_`.
+  bool inlineFile = !mem.initFilename.empty() && mem.initIsInline;
+  if (mem.preset || inlineFile) {
+    sv::InitialOp::create(b, [&]() {
+      if (mem.preset) {
+        Value value = ConstantOp::create(b, mem.preset.getValue());
+        auto addrType =
+            b.getIntegerType(std::max(1U, llvm::Log2_64_Ceil(mem.depth)));
+        auto assignWord = [&](Value addr) {
+          sv::BPAssignOp::create(b, sv::ArrayIndexInOutOp::create(b, reg, addr),
+                                 value);
+        };
+        // A loop needs a local variable; without them, it is one statement
+        // per word.
+        if (unrollMaskedWrites) {
+          for (uint64_t i = 0; i < mem.depth; ++i)
+            assignWord(ConstantOp::create(b, addrType, i));
+        } else {
+          auto indexType = b.getIntegerType(llvm::Log2_64_Ceil(mem.depth + 1));
+          sv::ForOp::create(b, 0, mem.depth, 1, indexType, "i",
+                            [&](BlockArgument index) {
+                              Value addr = index;
+                              if (indexType != addrType)
+                                addr = b.createOrFold<comb::ExtractOp>(
+                                    addr, 0, addrType.getWidth());
+                              assignWord(addr);
+                            });
+        }
+      }
+      if (inlineFile)
+        sv::ReadMemOp::create(b, reg, mem.initFilename,
+                              mem.initIsBinary ? MemBaseTypeAttr::MemBaseBin
+                                               : MemBaseTypeAttr::MemBaseHex);
+    });
+  }
+
   // Add logic to initialize the memory and any internal registers to random
   // values.
   if (disableMemRandomization && disableRegRandomization)
@@ -676,8 +709,9 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem,
     sv::InitialOp::create(b, [&]() {
       sv::VerbatimOp::create(b, "`INIT_RANDOM_PROLOG_");
 
-      // Memory randomization logic.  The entire memory is randomized.
-      if (!disableMemRandomization) {
+      // Memory randomization logic.  The entire memory is randomized, unless
+      // it starts out with a preset.
+      if (!disableMemRandomization && !mem.preset) {
         sv::IfDefProceduralOp::create(b, "RANDOMIZE_MEM_INIT", [&]() {
           auto outerLoopIndVarType =
               b.getIntegerType(llvm::Log2_64_Ceil(mem.depth + 1));

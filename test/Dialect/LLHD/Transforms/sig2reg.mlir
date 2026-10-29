@@ -235,3 +235,115 @@ hw.module @KeepAttributes(in %clk : !seq.clock, in %a : i8, in %b : i8, out prod
   // CHECK: hw.output [[PROD]], [[Q]]
   hw.output %3, %4 : i8, i8
 }
+
+// A signal that a register drives, and that an `initial` block drives once
+// with a constant, holds the register, preset to the constant.
+// CHECK-LABEL: hw.module @InitialConstant
+hw.module @InitialConstant(in %clk : !seq.clock, in %d : i8, out q : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  %c5_i8 = hw.constant 5 : i8
+  // CHECK-NOT: llhd.
+  // CHECK: [[Q:%.+]] = seq.firreg %d clock %clk preset 5 : i8
+  // CHECK: hw.output [[Q]]
+  %q = llhd.sig : <i8>
+  llhd.drv %q, %c5_i8 after %epsilon : i8
+  %0 = seq.firreg %d clock %clk : i8
+  llhd.drv %q, %0 after %epsilon : i8
+  %1 = llhd.prb %q : i8
+  hw.output %1 : i8
+}
+
+// A RAM filled with a constant, by a loop or an assignment pattern, is a
+// register array preset to it: element 0 in the low bits.
+// CHECK-LABEL: hw.module @InitialAggregate
+hw.module @InitialAggregate(in %clk : !seq.clock, in %we : i1, in %wa : i2, in %wd : i8, in %ra : i2, out rd : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  %init = hw.aggregate_constant [0 : i8, 0 : i8, 1 : i8, 2 : i8] : !hw.array<4xi8>
+  // CHECK-NOT: llhd.
+  // CHECK: [[INJ:%.+]] = hw.array_inject [[RAM:%.+]][%wa], %wd
+  // CHECK: [[RD:%.+]] = hw.array_get [[RAM]][%ra]
+  // CHECK: [[NEXT:%.+]] = comb.mux bin %we, [[INJ]], [[RAM]]
+  // CHECK: [[RAM]] = seq.firreg [[NEXT]] clock %clk preset 258 : !hw.array<4xi8>
+  // CHECK: hw.output [[RD]]
+  %ram = llhd.sig : <!hw.array<4xi8>>
+  %0 = llhd.prb %ram : !hw.array<4xi8>
+  llhd.drv %ram, %init after %epsilon : !hw.array<4xi8>
+  %1 = hw.array_inject %0[%wa], %wd : !hw.array<4xi8>, i2
+  %2 = hw.array_get %0[%ra] : !hw.array<4xi8>, i2
+  %3 = comb.mux bin %we, %1, %4 : !hw.array<4xi8>
+  %4 = seq.firreg %3 clock %clk : !hw.array<4xi8>
+  llhd.drv %ram, %4 after %epsilon : !hw.array<4xi8>
+  hw.output %2 : i8
+}
+
+// A RAM an `initial` block loads from a file is a register array that records
+// the file. Ascending ranges load from the last element of the array down.
+// CHECK-LABEL: hw.module @InitialFileLoad
+hw.module @InitialFileLoad(in %clk : !seq.clock, in %we : i1, in %wa : i2, in %wd : i8, in %ra : i2, out rd : i8, out rd2 : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  %file = sim.string.literal "init.hex"
+  %file2 = sim.string.literal "init.bin"
+  // CHECK-NOT: llhd.
+  // CHECK-NOT: sim.
+  // CHECK: seq.firreg {{%.+}} clock %clk {seq.firmem_init = #seq.firmem.init<"init.hex", false, true>, seq.firmem_init_reversed} : !hw.array<4xi8>
+  // CHECK: seq.firreg {{%.+}} clock %clk {seq.firmem_init = #seq.firmem.init<"init.bin", true, true>} : !hw.array<4xi8>
+  %ram = llhd.sig : <!hw.array<4xi8>>
+  %0 = llhd.prb %ram : !hw.array<4xi8>
+  %1 = llhd.process -> !hw.array<4xi8> {
+    %l = sim.sv.readmem %file, %0 {dimDescending = array<i1: false>, dimLows = array<i64: 0>} : !hw.array<4xi8>
+    llhd.halt %l : !hw.array<4xi8>
+  }
+  llhd.drv %ram, %1 after %epsilon : !hw.array<4xi8>
+  %2 = hw.array_inject %0[%wa], %wd : !hw.array<4xi8>, i2
+  %3 = hw.array_get %0[%ra] : !hw.array<4xi8>, i2
+  %4 = comb.mux bin %we, %2, %5 : !hw.array<4xi8>
+  %5 = seq.firreg %4 clock %clk : !hw.array<4xi8>
+  llhd.drv %ram, %5 after %epsilon : !hw.array<4xi8>
+
+  // Descending ranges load from the first element up.
+  %ram2 = llhd.sig : <!hw.array<4xi8>>
+  %6 = llhd.prb %ram2 : !hw.array<4xi8>
+  %7 = llhd.process -> !hw.array<4xi8> {
+    %l = sim.sv.readmem %file2, %6 {isBinary = true, dimDescending = array<i1: true>, dimLows = array<i64: 0>} : !hw.array<4xi8>
+    llhd.halt %l : !hw.array<4xi8>
+  }
+  llhd.drv %ram2, %7 after %epsilon : !hw.array<4xi8>
+  %8 = hw.array_inject %6[%wa], %wd : !hw.array<4xi8>, i2
+  %9 = hw.array_get %6[%ra] : !hw.array<4xi8>, i2
+  %10 = comb.mux bin %we, %8, %11 : !hw.array<4xi8>
+  %11 = seq.firreg %10 clock %clk : !hw.array<4xi8>
+  llhd.drv %ram2, %11 after %epsilon : !hw.array<4xi8>
+  hw.output %3, %9 : i8, i8
+}
+
+// A RAM without an initial value keeps a register without one.
+// CHECK-LABEL: hw.module @NoInitial
+hw.module @NoInitial(in %clk : !seq.clock, in %we : i1, in %wa : i2, in %wd : i8, in %ra : i2, out rd : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK-NOT: llhd.
+  // CHECK: seq.firreg {{%.+}} clock %clk : !hw.array<4xi8>
+  %ram = llhd.sig : <!hw.array<4xi8>>
+  %0 = llhd.prb %ram : !hw.array<4xi8>
+  %1 = hw.array_inject %0[%wa], %wd : !hw.array<4xi8>, i2
+  %2 = hw.array_get %0[%ra] : !hw.array<4xi8>, i2
+  %3 = comb.mux bin %we, %1, %4 : !hw.array<4xi8>
+  %4 = seq.firreg %3 clock %clk : !hw.array<4xi8>
+  llhd.drv %ram, %4 after %epsilon : !hw.array<4xi8>
+  hw.output %2 : i8
+}
+
+// A constant a signal is driven with, other than by a register and an
+// `initial` block, is not an initial value.
+// CHECK-LABEL: hw.module @NotInitial
+hw.module @NotInitial(in %clk : !seq.clock, in %d : i8, in %en : i1, out q : i8) {
+  %epsilon = llhd.constant_time <0ns, 0d, 1e>
+  %c5_i8 = hw.constant 5 : i8
+  // CHECK: llhd.sig
+  // CHECK: seq.firreg %d clock %clk : i8
+  %q = llhd.sig : <i8>
+  llhd.drv %q, %c5_i8 after %epsilon if %en : i8
+  %0 = seq.firreg %d clock %clk : i8
+  llhd.drv %q, %0 after %epsilon : i8
+  %1 = llhd.prb %q : i8
+  hw.output %1 : i8
+}

@@ -534,6 +534,10 @@ def FirMemOp : SeqOp<"firmem", [
     such as width and depth or how read/write collisions are resolved. The read,
     write, and read-write ports are expressed as separate operations that take
     the declared memory as an operand.
+
+    The memory starts out with every word set to `preset`, if present, and
+    then with the contents of the `init` file loaded over it, if present.
+    Words neither of them sets start out undefined.
   }];
 
   let arguments = (ins
@@ -545,9 +549,24 @@ def FirMemOp : SeqOp<"firmem", [
     OptionalAttr<InnerSymAttr>:$inner_sym,
     OptionalAttr<FirMemInitAttr>:$init,
     OptionalAttr<StrAttr>:$prefix,
-    OptionalAttr<AnyAttr>:$output_file
+    OptionalAttr<AnyAttr>:$output_file,
+    OptionalAttr<APIntAttr>:$preset
   );
   let results = (outs FirMemType:$memory);
+
+  let builders = [
+    // A memory without a preset.
+    OpBuilder<(ins "::mlir::Type":$memory, "uint32_t":$readLatency,
+                   "uint32_t":$writeLatency, "::circt::seq::RUW":$ruw,
+                   "::circt::seq::WUW":$wuw, "::mlir::StringAttr":$name,
+                   "::circt::hw::InnerSymAttr":$innerSym,
+                   "::circt::seq::FirMemInitAttr":$init,
+                   "::mlir::StringAttr":$prefix,
+                   "::mlir::Attribute":$outputFile), [{
+      build($_builder, $_state, memory, readLatency, writeLatency, ruw, wuw,
+            name, innerSym, init, prefix, outputFile, ::mlir::IntegerAttr{});
+    }]>
+  ];
 
   let assemblyFormat = [{
     (`sym` $inner_sym^)? `` custom<ImplicitSSAName>($name)
@@ -556,6 +575,7 @@ def FirMemOp : SeqOp<"firmem", [
   }];
 
   let hasCanonicalizeMethod = true;
+  let hasVerifier = 1;
 }
 
 class AddressMatchesFirMem<string memoryValue, string addressValue> :

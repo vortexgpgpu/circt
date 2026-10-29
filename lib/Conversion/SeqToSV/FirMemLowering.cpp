@@ -107,6 +107,7 @@ FirMemConfig FirMemLowering::collectMemory(FirMemOp op) {
     cfg.initIsBinary = init.getIsBinary();
     cfg.initIsInline = init.getIsInline();
   }
+  cfg.preset = op.getPresetAttr();
   cfg.outputFile = op.getOutputFileAttr();
   if (auto prefix = op.getPrefixAttr())
     cfg.prefix = prefix.getValue();
@@ -339,6 +340,8 @@ FirMemLowering::createMemoryModule(FirMemConfig &mem,
 
   if (mem.svAttributes)
     sv::setSVAttributes(genOp, mem.svAttributes);
+  if (mem.preset)
+    genOp->setAttr("preset", mem.preset);
 
   // Put the memory in the lowest common ancestor directory.
   if (auto outputFile = computeCommonOutputFile(memOps))

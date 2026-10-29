@@ -38,3 +38,10 @@ hw.module @init() {
     seq.yield %1: i16
   }: () -> !seq.immutable<i32>
 }
+
+// -----
+
+hw.module @firmem_preset_width() {
+  // expected-error @below {{'seq.firmem' op preset width 4 does not match the memory width 8}}
+  %mem = seq.firmem 0, 1, undefined, undefined {preset = 5 : i4} : <4 x 8>
+}

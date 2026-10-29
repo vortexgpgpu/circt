@@ -38,6 +38,8 @@ struct FirMemConfig {
   StringRef initFilename;
   bool initIsBinary = false;
   bool initIsInline = false;
+  /// The value every word starts out with, if any.
+  IntegerAttr preset;
   Attribute outputFile;
   StringRef prefix;
   /// The SV attributes of the memory, e.g. `(* ram_style = "block" *)`.
@@ -47,9 +49,10 @@ struct FirMemConfig {
     return llvm::hash_combine(numReadPorts, numWritePorts, numReadWritePorts,
                               dataWidth, depth, readLatency, writeLatency,
                               maskBits, readUnderWrite, writeUnderWrite,
-                              initFilename, initIsBinary, initIsInline, prefix,
-                              svAttributes) ^
-           llvm::hash_combine_range(writeClockIDs.begin(), writeClockIDs.end()) ^
+                              initFilename, initIsBinary, initIsInline, preset,
+                              prefix, svAttributes) ^
+           llvm::hash_combine_range(writeClockIDs.begin(),
+                                    writeClockIDs.end()) ^
            llvm::hash_combine_range(clockIDs.begin(), clockIDs.end());
   }
 
@@ -58,7 +61,7 @@ struct FirMemConfig {
                            dataWidth, depth, readLatency, writeLatency,
                            maskBits, readUnderWrite, writeUnderWrite,
                            writeClockIDs, clockIDs, initFilename, initIsBinary,
-                           initIsInline, prefix, svAttributes);
+                           initIsInline, preset, prefix, svAttributes);
   }
 
   bool operator==(const FirMemConfig &other) const {

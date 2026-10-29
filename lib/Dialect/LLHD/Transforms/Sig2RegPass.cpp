@@ -16,6 +16,7 @@
 #include "circt/Dialect/LLHD/LLHDPasses.h"
 #include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
+#include "circt/Dialect/Sim/SimOps.h"
 #include "llvm/Support/Debug.h"
 
 #include "mlir/IR/Matchers.h"
@@ -462,6 +463,133 @@ static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
   return success();
 }
 
+/// The bits of a constant integer or aggregate value, as an integer attribute
+/// of its width, or null if the value is not a constant.
+static IntegerAttr getConstantBits(Value value) {
+  Attribute attr;
+  if (!matchPattern(value, m_Constant(&attr)))
+    return {};
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return intAttr;
+  APInt bits;
+  auto fields = dyn_cast<ArrayAttr>(attr);
+  if (!fields ||
+      failed(hw::aggregateAttrToAPInt(value.getType(), fields, bits)))
+    return {};
+  return IntegerAttr::get(
+      IntegerType::get(value.getContext(), bits.getBitWidth()), bits);
+}
+
+/// The `$readmemh`/`$readmemb` an `initial` block loads a whole signal with:
+/// a process that runs once and yields the contents loaded from a file into
+/// the signal as it starts out. Null if `value` is not such a load.
+static sim::SVReadMemOp getInitialFileLoad(Value value, llhd::SignalOp sigOp) {
+  auto result = dyn_cast<OpResult>(value);
+  auto process =
+      result ? dyn_cast<llhd::ProcessOp>(result.getOwner()) : llhd::ProcessOp{};
+  if (!process || !process.getBody().hasOneBlock())
+    return {};
+  auto halt = dyn_cast<llhd::HaltOp>(process.getBody().front().getTerminator());
+  if (!halt)
+    return {};
+  auto load = halt.getYieldOperands()[result.getResultNumber()]
+                  .getDefiningOp<sim::SVReadMemOp>();
+  // The whole file, without start or finish address or slice, loaded into a
+  // memory of one dimension, which addresses its elements.
+  if (!load || load.getStartAddr() || load.getFinishAddr() ||
+      load.getSliceLeft() || load.getSliceRight() || load.getEnumValues() ||
+      load.getDimDescending().size() != 1 ||
+      !load.getFilename().getDefiningOp<sim::StringConstantOp>())
+    return {};
+  // The load starts from the signal as it starts out.
+  auto probe = load.getMemory().getDefiningOp<llhd::ProbeOp>();
+  if (!probe || probe.getSignal() != sigOp.getResult() ||
+      probe->getBlock() != sigOp->getBlock())
+    return {};
+  return load;
+}
+
+/// Fold the value a signal starts out with into the register that drives it.
+/// A register drives the signal, and an `initial` block drives it once with
+/// its first value: a constant, which becomes the register's preset, or the
+/// contents of a file, which the register array records to be loaded from.
+/// Without the second drive, the register holds the signal on its own.
+static LogicalResult foldInitialDrive(llhd::SignalOp sigOp) {
+  // Two drives of the whole signal, and no drive of a part of it.
+  SmallVector<llhd::DriveOp, 2> drives;
+  SmallVector<Value> worklist{sigOp.getResult()};
+  while (!worklist.empty()) {
+    auto value = worklist.pop_back_val();
+    for (auto &use : value.getUses()) {
+      auto *user = use.getOwner();
+      if (auto drive = dyn_cast<llhd::DriveOp>(user)) {
+        if (value != sigOp.getResult() || use.getOperandNumber() != 0 ||
+            drive.getEnable() || drive->getBlock() != sigOp->getBlock())
+          return failure();
+        drives.push_back(drive);
+      } else if (!isa<llhd::ProbeOp>(user)) {
+        for (auto result : user->getResults())
+          if (isa<llhd::RefType>(result.getType()))
+            worklist.push_back(result);
+      }
+    }
+  }
+  if (drives.size() != 2)
+    return failure();
+
+  // Both drives take effect immediately, at the start for the initial one.
+  auto isImmediate = [](llhd::DriveOp drive) {
+    auto timeOp = drive.getTime().getDefiningOp<llhd::ConstantTimeOp>();
+    if (!timeOp)
+      return false;
+    auto time = timeOp.getValue();
+    return time.getTime() == 0 && time.getDelta() == 0 &&
+           time.getEpsilon() <= 1;
+  };
+  auto regDrive = drives[0], initDrive = drives[1];
+  if (!regDrive.getValue().getDefiningOp<seq::FirRegOp>())
+    std::swap(regDrive, initDrive);
+  auto reg = regDrive.getValue().getDefiningOp<seq::FirRegOp>();
+  if (!reg || !isImmediate(regDrive) || !isImmediate(initDrive))
+    return failure();
+
+  if (auto bits = getConstantBits(initDrive.getValue())) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  - Folding the initial value into " << reg << "\n");
+    reg.setPresetAttr(bits);
+    initDrive.erase();
+    return success();
+  }
+
+  auto load = getInitialFileLoad(initDrive.getValue(), sigOp);
+  auto arrayType = hw::type_dyn_cast<hw::ArrayType>(reg.getType());
+  if (!load || !arrayType)
+    return failure();
+  LLVM_DEBUG(llvm::dbgs() << "  - Folding the initial file load into " << reg
+                          << "\n");
+  auto filename = load.getFilename().getDefiningOp<sim::StringConstantOp>();
+  reg->setAttr(seq::getRegFileInitAttrName(),
+               seq::FirMemInitAttr::get(reg.getContext(),
+                                        filename.getLiteralAttr(),
+                                        load.getIsBinary(),
+                                        /*isInline=*/true));
+  // A file loads a memory from its lowest address up. The first element of an
+  // array is its right bound, the highest address of an ascending range.
+  if (!load.getDimDescending()[0])
+    reg->setAttr(seq::getRegFileInitReversedAttrName(),
+                 UnitAttr::get(reg.getContext()));
+  // The process goes once it loads nothing else and does nothing besides.
+  auto process =
+      cast<llhd::ProcessOp>(cast<OpResult>(initDrive.getValue()).getOwner());
+  initDrive.erase();
+  if (process->use_empty() &&
+      llvm::all_of(process.getBody().front(), [](Operation &op) {
+        return isa<sim::SVReadMemOp, llhd::HaltOp>(op) || isPure(&op);
+      }))
+    process.erase();
+  return success();
+}
+
 struct Sig2RegPass : public circt::llhd::impl::Sig2RegBase<Sig2RegPass> {
   void runOnOperation() override;
 };
@@ -491,6 +619,7 @@ void Sig2RegPass::runOnOperation() {
 
     LLVM_DEBUG(llvm::dbgs() << "  - Attempting to promote signal "
                             << sigOp.getName() << "\n");
+    (void)foldInitialDrive(sigOp);
     if (succeeded(promoteSingleWholeDrive(sigOp))) {
       LLVM_DEBUG(llvm::dbgs() << "  - Promoted single whole-value drive\n\n");
       continue;

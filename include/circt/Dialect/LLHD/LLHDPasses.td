@@ -48,8 +48,16 @@ def LowerRefPortsPass : Pass<"llhd-lower-ref-ports", "mlir::ModuleOp"> {
 
 def Sig2Reg : Pass<"llhd-sig2reg", "hw::HWModuleOp"> {
   let summary = "promote LLHD signals to SSA values";
+  let description = [{
+    A signal that a register drives, and that is also driven once with the
+    value it starts out with, as an `initial` block assigns it, holds the
+    register: the starting value becomes the register's preset, or, loaded
+    from a file by `$readmemh`/`$readmemb`, the file the register array is
+    loaded from, and the signal is promoted to the register's value.
+  }];
 
-  let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect"];
+  let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect",
+                           "circt::seq::SeqDialect"];
 }
 
 def Mem2RegPass : Pass<"llhd-mem2reg"> {

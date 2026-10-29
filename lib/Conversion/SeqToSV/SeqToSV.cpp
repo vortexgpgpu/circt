@@ -585,6 +585,19 @@ void SeqToSVPass::runOnOperation() {
 
   auto modules = llvm::to_vector(circuit.getOps<HWModuleOp>());
 
+  // Only a memory can be loaded from a file, not a register array: the file
+  // would be lost.
+  bool fileInitRegs = false;
+  circuit.walk([&](FirRegOp reg) {
+    if (!reg->hasAttr(getRegFileInitAttrName()))
+      return;
+    reg.emitError("register array loaded from a file is not a memory; only a "
+                  "memory can be loaded from a file");
+    fileInitRegs = true;
+  });
+  if (fileInitRegs)
+    return signalPassFailure();
+
   FirMemLowering memLowering(circuit);
 
   // Identify memories and group them by module.
