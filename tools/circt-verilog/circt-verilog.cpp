@@ -154,6 +154,11 @@ struct CLOptions {
       cl::desc("Retype `i1` ports used as clocks to `!seq.clock`"),
       cl::init(true), cl::cat(cat)};
 
+  cl::opt<unsigned> maxUnrollTripCount{
+      "max-unroll-trip-count",
+      cl::desc("Unroll only the loops of processes with fewer iterations"),
+      cl::init(1024), cl::cat(cat)};
+
   cl::opt<bool> preserveUnpackedPorts{
       "preserve-unpacked-ports",
       cl::desc("Keep the unpacked array ports of top-level modules unpacked"),
@@ -362,6 +367,7 @@ static void populatePasses(PassManager &pm) {
   LlhdToCorePipelineOptions options;
   options.detectMemories = opts.detectMemories;
   options.inferClockPorts = opts.inferClockPorts;
+  options.maxUnrollTripCount = opts.maxUnrollTripCount;
   options.sroa = opts.sroa;
   populateLlhdToCorePipeline(pm, options);
 }

@@ -536,10 +536,15 @@ void circt::populateMooreToCorePipeline(
 /// signals with process results, detect registers, remove control flow, turn
 /// reference ports into values, and promote the module-level signals left.
 static void addProcessLowering(OpPassManager &pm, bool sroa,
-                               bool inferClockPorts) {
+                               bool inferClockPorts, unsigned maxTripCount) {
   // Mark the reference ports no other port is bound to the same signal as, so
   // that a process driving several members of an interface port is lowered.
   pm.addPass(llhd::createInferNoAliasPortsPass());
+  auto unrollLoops = [&] {
+    llhd::UnrollLoopsPassOptions unrollOptions;
+    unrollOptions.maxTripCount = maxTripCount;
+    return llhd::createUnrollLoopsPass(unrollOptions);
+  };
   auto &modulePM = pm.nest<hw::HWModuleOp>();
   // See https://github.com/llvm/circt/issues/8804.
   if (sroa)
@@ -548,14 +553,14 @@ static void addProcessLowering(OpPassManager &pm, bool sroa,
   modulePM.addPass(llhd::createHoistSignalsPass());
   // Clocked processes may contain counted loops (e.g. resetting all elements
   // of an array register); Deseq needs them unrolled.
-  modulePM.addPass(llhd::createUnrollLoopsPass());
+  modulePM.addPass(unrollLoops());
   modulePM.addPass(llhd::createDeseqPass());
   modulePM.addPass(llhd::createLowerProcessesPass());
   modulePM.addPass(mlir::createCSEPass());
   modulePM.addPass(mlir::createCanonicalizerPass());
 
   // Unroll loops and remove control flow.
-  modulePM.addPass(llhd::createUnrollLoopsPass());
+  modulePM.addPass(unrollLoops());
   modulePM.addPass(mlir::createCSEPass());
   modulePM.addPass(mlir::createCanonicalizerPass());
   modulePM.addPass(llhd::createRemoveControlFlowPass());
@@ -610,8 +615,10 @@ void circt::populateLlhdToCorePipeline(
   // a clocked process from Deseq. On a 4-core Vortex GPU the first round
   // leaves 271 signals and 5 processes, the second 2 signals and none; a
   // third round changes nothing.
-  addProcessLowering(pm, options.sroa, options.inferClockPorts);
-  addProcessLowering(pm, /*sroa=*/false, options.inferClockPorts);
+  addProcessLowering(pm, options.sroa, options.inferClockPorts,
+                     options.maxUnrollTripCount);
+  addProcessLowering(pm, /*sroa=*/false, options.inferClockPorts,
+                     options.maxUnrollTripCount);
 
   // Map `seq.firreg` with array type and `hw.array_inject` self-feedback to
   // `seq.firmem` ops.

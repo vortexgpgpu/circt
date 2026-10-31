@@ -97,7 +97,8 @@ static void cloneBlocks(ArrayRef<Block *> blocks, Region &region,
 namespace {
 /// A data structure tracking information on a single loop.
 struct Loop {
-  Loop(unsigned loopId, CFGLoop &cfgLoop) : loopId(loopId), cfgLoop(cfgLoop) {}
+  Loop(unsigned loopId, CFGLoop &cfgLoop, unsigned maxTripCount)
+      : loopId(loopId), cfgLoop(cfgLoop), maxTripCount(maxTripCount) {}
   bool failMatch(const Twine &msg) const;
   bool match();
   void unroll(CFGLoopInfo &cfgLoopInfo);
@@ -106,6 +107,8 @@ struct Loop {
   unsigned loopId;
   /// Loop analysis information about this specific loop.
   CFGLoop &cfgLoop;
+  /// Only loops of fewer iterations are unrolled.
+  unsigned maxTripCount;
   /// The CFG edge exiting the loop.
   BlockOperand *exitEdge = nullptr;
   /// The SSA value holding the exit condition.
@@ -308,8 +311,8 @@ bool Loop::match() {
   // Calculate the trip count as ceil(range/stride)
   unsigned stride = indVarIncrement.abs().getZExtValue();
   tripCount = (*range + stride - 1) / stride;
-  // For now don't expand more than 1k iterations.
-  if (tripCount >= 1024)
+  // Don't expand more iterations than the pass is told to (1k by default).
+  if (tripCount >= maxTripCount)
     return failMatch("unsupported loop bounds");
 
   return true;
@@ -469,6 +472,7 @@ void Loop::unroll(CFGLoopInfo &cfgLoopInfo) {
 namespace {
 struct UnrollLoopsPass
     : public llhd::impl::UnrollLoopsPassBase<UnrollLoopsPass> {
+  using UnrollLoopsPassBase::UnrollLoopsPassBase;
   void runOnOperation() override;
   void runOnOperation(Operation *op);
   bool unrollLoops(Operation *op);
@@ -523,7 +527,7 @@ bool UnrollLoopsPass::unrollLoops(Operation *op) {
       cfgLoop->print(llvm::dbgs(), false, false);
       llvm::dbgs() << "\n";
     });
-    Loop loop(loops.size(), *cfgLoop);
+    Loop loop(loops.size(), *cfgLoop, maxTripCount);
 
     // Ensure that the header block is only a header for the current loop. This
     // simplifies unrolling.

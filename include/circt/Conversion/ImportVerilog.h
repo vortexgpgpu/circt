@@ -204,6 +204,11 @@ struct LlhdToCorePipelineOptions
       llvm::cl::desc("Destructure arrays and structs into individual signals. "
                      "See https://github.com/llvm/circt/issues/8804."),
       llvm::cl::init(false)};
+  Option<unsigned> maxUnrollTripCount{
+      *this, "max-unroll-trip-count",
+      llvm::cl::desc("Unroll only the loops of processes with fewer "
+                     "iterations (llhd-unroll-loops max-trip-count)"),
+      llvm::cl::init(1024)};
 };
 void populateLlhdToCorePipeline(mlir::OpPassManager &pm,
                                 const LlhdToCorePipelineOptions &options);

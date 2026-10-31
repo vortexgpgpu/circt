@@ -161,8 +161,13 @@ def UnrollLoopsPass : Pass<"llhd-unroll-loops", "hw::HWModuleOp"> {
     replicating the loop body and replacing induction variables with constants.
     The loop bounds must be known at compile time. Loops in processes, such as
     a reset loop over the elements of an array register in a clocked process,
-    must be unrolled before `llhd-deseq` can detect the register.
+    must be unrolled before `llhd-deseq` can detect the register. A loop of
+    `max-trip-count` iterations or more is left as it is.
   }];
+  let options = [
+    Option<"maxTripCount", "max-trip-count", "unsigned", "1024",
+           "Unroll only the loops of fewer iterations">
+  ];
 }
 
 #endif // CIRCT_DIALECT_LLHD_LLHDPASSES_TD
