@@ -62,9 +62,20 @@ public:
 private:
   Bits compute(Value value);
   Bits fold(Operation *op, unsigned resultNumber, unsigned width);
+  /// The values `compute` reads whatever their bits, in the order it reads
+  /// them; none for an op whose reads depend on the bits it reads first.
+  void staticReads(Value value, SmallVectorImpl<Value> &reads);
+  /// A value's bits known or being computed.
+  const Bits *lookup(Value value);
+  /// Varying bits of a width, in place of a value not computed yet.
+  const Bits &placeholder(unsigned width);
 
   /// Held by pointer, as the bits of a value are read while others are added.
   DenseMap<Value, std::unique_ptr<Bits>> cache;
+  /// While `compute` runs: the first value it read that is not computed yet.
+  bool computing = false;
+  Value missing;
+  DenseMap<unsigned, std::unique_ptr<Bits>> placeholders;
 };
 
 struct RegConstPropPass
@@ -131,21 +142,93 @@ void Analysis::solve(bool defined) {
   }
 }
 
-const Bits &Analysis::get(Value value) {
+const Bits *Analysis::lookup(Value value) {
   if (auto reg = value.getDefiningOp<FirRegOp>())
     if (auto it = state.find(reg); it != state.end())
-      return it->second;
+      return &it->second;
   if (auto it = cache.find(value); it != cache.end())
-    return *it->second;
-  // A value whose bits depend on other bits of itself, a cycle of the logic
-  // between words though not between bits, reads as varying while it is
-  // computed: the conservative answer, where recursing would not end.
-  auto width = std::max<int64_t>(hw::getBitWidth(value.getType()), 0);
-  auto &slot = cache[value];
-  slot = std::make_unique<Bits>(width, Bit::Varying);
-  auto *bits = slot.get();
-  *bits = compute(value);
-  return *bits;
+    return it->second.get();
+  return nullptr;
+}
+
+const Bits &Analysis::placeholder(unsigned width) {
+  auto &slot = placeholders[width];
+  if (!slot)
+    slot = std::make_unique<Bits>(width, Bit::Varying);
+  return *slot;
+}
+
+/// Computes `root` and the values it reads depth first, as a recursion over
+/// the reads would, but without one: logic chains far more values than a
+/// thread's stack holds frames. A value whose bits depend on other bits of
+/// itself, a cycle of the logic between words though not between bits, reads
+/// as varying while it is computed: the conservative answer, where the search
+/// would not end. Each value is computed once the values it reads are: those
+/// it reads whatever their bits first, in order; then `compute` runs, and a
+/// read of a value not computed yet stops it (it reads varying bits in its
+/// place), that value is computed, and `compute` runs again.
+const Bits &Analysis::get(Value root) {
+  if (auto *bits = lookup(root))
+    return *bits;
+  if (computing) {
+    if (!missing)
+      missing = root;
+    return placeholder(std::max<int64_t>(hw::getBitWidth(root.getType()), 0));
+  }
+  struct Frame {
+    Value value;
+    SmallVector<Value, 4> reads;
+    unsigned next = 0;
+  };
+  SmallVector<Frame> frames;
+  auto enter = [&](Value value) {
+    auto width = std::max<int64_t>(hw::getBitWidth(value.getType()), 0);
+    cache[value] = std::make_unique<Bits>(width, Bit::Varying);
+    frames.push_back({value, {}, 0});
+    staticReads(value, frames.back().reads);
+  };
+  enter(root);
+  while (!frames.empty()) {
+    auto &frame = frames.back();
+    if (frame.next < frame.reads.size()) {
+      Value read = frame.reads[frame.next++];
+      if (!lookup(read))
+        enter(read);
+      continue;
+    }
+    Value value = frame.value;
+    computing = true;
+    missing = {};
+    auto bits = compute(value);
+    computing = false;
+    if (missing) {
+      enter(missing);
+      continue;
+    }
+    *cache[value] = std::move(bits);
+    frames.pop_back();
+  }
+  return *cache[root];
+}
+
+void Analysis::staticReads(Value value, SmallVectorImpl<Value> &reads) {
+  auto *op = value.getDefiningOp();
+  if (!op || hw::getBitWidth(value.getType()) <= 0)
+    return;
+  // The last operand of these first: the low bits.
+  if (isa<comb::ConcatOp, hw::ArrayCreateOp, hw::ArrayConcatOp,
+          hw::StructCreateOp>(op)) {
+    reads.append(op->operand_begin(), op->operand_end());
+    std::reverse(reads.begin(), reads.end());
+    return;
+  }
+  if (isa<comb::AndOp, comb::OrOp, comb::XorOp>(op)) {
+    reads.append(op->operand_begin(), op->operand_end());
+    return;
+  }
+  if (isa<comb::ExtractOp, comb::ReplicateOp, hw::BitcastOp,
+          hw::StructExtractOp>(op))
+    reads.push_back(op->getOperand(0));
 }
 
 Bits Analysis::compute(Value value) {
