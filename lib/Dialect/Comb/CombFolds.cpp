@@ -2977,7 +2977,9 @@ static bool applyCmpPredicateToEqualOperands(ICmpPredicate predicate) {
 OpFoldResult ICmpOp::fold(FoldAdaptor adaptor) {
   // gt a, a -> false
   // gte a, a -> true
-  if (getLhs() == getRhs()) {
+  // A zero-width integer has a single value, so any two are equal.
+  auto intType = dyn_cast<IntegerType>(getLhs().getType());
+  if (getLhs() == getRhs() || (intType && intType.getWidth() == 0)) {
     auto val = applyCmpPredicateToEqualOperands(getPredicate());
     return IntegerAttr::get(getType(), val);
   }

@@ -1839,11 +1839,10 @@ hw.module @cantCombineOppositeNonBinCmpIntoConstant(in %tag_0: i4, in %tag_1: i4
 // CHECK-DAG: %[[CONCAT_ITSELF:.*]] = comb.concat %[[I0_VAL]], %[[ZERO]] : i0, i0
 // CHECK-DAG: %[[DIVS:.*]] = comb.divs %[[I0_VAL]], %[[ZERO]] : i0
 // CHECK-DAG: %[[DIVU:.*]] = comb.divu %[[I0_VAL]], %[[ZERO]] : i0
-// CHECK-DAG: %[[ICMP_EQ:.*]] = comb.icmp eq %[[I0_VAL]], %[[ZERO]] : i0
-// CHECK-DAG: %[[ICMP_NE:.*]] = comb.icmp ne %[[I0_VAL]], %[[ZERO]] : i0
+// CHECK-DAG: %[[TRUE:.*]] = hw.constant true
 // CHECK-DAG: %[[MODS:.*]] = comb.mods %[[I0_VAL]], %[[ZERO]] : i0
 // CHECK-DAG: %[[MODU:.*]] = comb.modu %[[I0_VAL]], %[[ZERO]] : i0
-// CHECK-DAG: hw.output %[[I0_VAL]], %[[I0_VAL]], %[[ZERO]], %[[ZERO]], %[[I0_VAL]], %[[ZERO]], %[[CONCAT]], %[[CONCAT_REVERSE]], %[[CONCAT_REMAINS]], %[[CONCAT_ITSELF]], %[[DIVS]], %[[DIVU]], %[[ICMP_EQ]], %[[ICMP_NE]], %[[MODS]], %[[MODU]], %[[FALSE]], %[[ZERO]], %[[ZERO]], %[[I0_VAL]], %[[I0_VAL]], %[[I0_VAL]] : i0, i0, i0, i0, i0, i0, i32, i32, i33, i0, i0, i0, i1, i1, i0, i0, i1, i0, i0, i0, i0, i0
+// CHECK-DAG: hw.output %[[I0_VAL]], %[[I0_VAL]], %[[ZERO]], %[[ZERO]], %[[I0_VAL]], %[[ZERO]], %[[CONCAT]], %[[CONCAT_REVERSE]], %[[CONCAT_REMAINS]], %[[CONCAT_ITSELF]], %[[DIVS]], %[[DIVU]], %[[TRUE]], %[[FALSE]], %[[MODS]], %[[MODU]], %[[FALSE]], %[[ZERO]], %[[ZERO]], %[[I0_VAL]], %[[I0_VAL]], %[[I0_VAL]] : i0, i0, i0, i0, i0, i0, i32, i32, i33, i0, i0, i0, i1, i1, i0, i0, i1, i0, i0, i0, i0, i0
 hw.module @i0checks(in %i32_val: i32, in %i1_val: i1, in %i0_val: i0, out add: i0, out sub: i0, out mul: i0, out or: i0, out xor: i0, out and: i0, out concat: i32, out concat_reverse: i32, out concat_remains: i33, out concat_itself: i0, out divs: i0, out divu: i0, out icmp_eq: i1, out icmp_ne: i1, out mods: i0, out modu: i0, out parity: i1, out replicate: i0, out extract: i0, out shl: i0, out shrs: i0, out shru: i0) {
   %zero = hw.constant 0 : i0
 
@@ -2218,4 +2217,18 @@ hw.module @MuxOfSameIndexInjects(in %c : i1, in %x : !hw.array<4xi8>, in %i : i2
   %1 = hw.array_inject %x[%i], %b : !hw.array<4xi8>, i2
   %2 = comb.mux %c, %0, %1 : !hw.array<4xi8>
   hw.output %2 : !hw.array<4xi8>
+}
+
+// Zero-width integers have a single value: any two compare equal.
+// CHECK-LABEL: hw.module @ICmpZeroWidth
+hw.module @ICmpZeroWidth(in %a : i1, in %b : i1, out eq : i1, out ne : i1, out ult : i1) {
+  // CHECK-NEXT: %true = hw.constant true
+  // CHECK-NEXT: %false = hw.constant false
+  // CHECK-NEXT: hw.output %true, %false, %false
+  %0 = comb.extract %a from 0 : (i1) -> i0
+  %1 = comb.extract %b from 0 : (i1) -> i0
+  %2 = comb.icmp eq %0, %1 : i0
+  %3 = comb.icmp ne %0, %1 : i0
+  %4 = comb.icmp ult %0, %1 : i0
+  hw.output %2, %3, %4 : i1, i1, i1
 }
