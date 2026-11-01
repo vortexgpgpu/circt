@@ -168,3 +168,17 @@ hw.module @UseNoAliasMark() {
   %y = llhd.sig %c0 : <i8>
   hw.instance "n" @NoAliasMark(a: %x: !llhd.ref<i8>, b: %y: !llhd.ref<i8>) -> ()
 }
+
+// Port attributes stay with their ports when the module is retyped, also when
+// an output comes before the inputs.
+// CHECK-LABEL: hw.module private @InterleavedPortAttrs(out o : i8 {hw.test = "o"}, in %r : i8, in %x : i8 {hw.test = "x"})
+hw.module private @InterleavedPortAttrs(out o : i8 {hw.test = "o"}, in %r : !llhd.ref<i8>, in %x : i8 {hw.test = "x"}) {
+  %0 = llhd.prb %r : i8
+  hw.output %0 : i8
+}
+hw.module @UseInterleavedPortAttrs(in %v : i8, out o : i8) {
+  %c0 = hw.constant 0 : i8
+  %a = llhd.sig %c0 : <i8>
+  %o = hw.instance "m" @InterleavedPortAttrs(r: %a: !llhd.ref<i8>, x: %v: i8) -> (o: i8)
+  hw.output %o : i8
+}

@@ -1417,9 +1417,13 @@ static void setHWModuleType(ModTy &mod, ModuleType type) {
   argAttrs.resize(newNumArgs, emptyDict);
   resAttrs.resize(newNumResults, emptyDict);
 
-  SmallVector<Attribute> attrs;
-  attrs.append(argAttrs.begin(), argAttrs.end());
-  attrs.append(resAttrs.begin(), resAttrs.end());
+  // Port attributes are indexed by port, in the order of the module type, where
+  // inputs and outputs may interleave.
+  SmallVector<Attribute> attrs(type.getNumPorts());
+  for (unsigned i = 0; i < newNumArgs; ++i)
+    attrs[type.getPortIdForInputId(i)] = argAttrs[i];
+  for (unsigned i = 0; i < newNumResults; ++i)
+    attrs[type.getPortIdForOutputId(i)] = resAttrs[i];
 
   if (attrs.empty())
     return mod.removeAllPortAttrs();
