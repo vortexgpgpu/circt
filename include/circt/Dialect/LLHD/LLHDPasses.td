@@ -32,6 +32,24 @@ def InlineCallsPass : Pass<"llhd-inline-calls", "ModuleOp"> {
   ];
 }
 
+def InferNoAliasPortsPass : Pass<"llhd-infer-noalias-ports",
+                                 "mlir::ModuleOp"> {
+  let summary = "Mark reference ports that no other port aliases";
+  let description = [{
+    A reference port of a module may be bound to the same signal as another of
+    its reference ports, so Mem2Reg and HoistSignals cannot promote or hoist
+    the drives of a process that accesses more than one port: the drives of
+    two such ports may have to stay ordered. When every instance of a private
+    module is known, the signal each port is bound to can be traced: to a
+    signal declared in the instantiating module, or to a port of that module,
+    which only aliases another of its ports if neither is marked. A port that
+    is bound, at every instance, to a signal no other reference port of the
+    instance is bound to is marked `llhd.noalias`, which lets these passes
+    treat it like a signal declared outside the process. Modules are
+    processed parents first; the marks of a previous run are recomputed.
+  }];
+}
+
 def LowerRefPortsPass : Pass<"llhd-lower-ref-ports", "mlir::ModuleOp"> {
   let summary = "Replace signal reference ports with value ports";
   let description = [{

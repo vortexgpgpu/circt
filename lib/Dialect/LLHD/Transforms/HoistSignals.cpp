@@ -390,19 +390,22 @@ void DriveHoister::findHoistableSlots() {
     // reference port of the module.
     if (!slot.getParentRegion()->isProperAncestor(&getBody()))
       return;
-    auto portArg = dyn_cast<BlockArgument>(slot);
-    if (portArg && isa<hw::HWModuleOp>(portArg.getOwner()->getParentOp())) {
-      // Another reference port may be bound to the same signal; a signal
-      // declared in the module, or a projection of one, cannot be. Any op
-      // given another reference, such as a call, may access it.
+    if (isModuleRefPort(slot)) {
+      // Another reference port may be bound to the same signal, unless one of
+      // the two is marked `llhd.noalias`; a signal declared in the module, or a
+      // projection of one, cannot be. Any op given another reference, such as
+      // a call, may access it.
+      bool slotNoAlias = isNoAliasPort(slot);
       bool mayAlias = false;
       processOp->walk([&](Operation *user) {
         for (auto operand : user->getOperands()) {
           if (operand == slot || !isa<RefType>(operand.getType()))
             continue;
-          Value otherRoot;
-          SmallVector<std::string> otherPath;
-          mayAlias |= !getFieldPath(operand, otherRoot, otherPath);
+          auto root = getReferenceRoot(operand);
+          if (root.getDefiningOp<SignalOp>())
+            continue;
+          mayAlias |= root == slot || !isModuleRefPort(root) ||
+                      (!slotNoAlias && !isNoAliasPort(root));
         }
       });
       if (mayAlias)

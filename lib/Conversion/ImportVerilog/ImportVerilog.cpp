@@ -537,6 +537,9 @@ void circt::populateMooreToCorePipeline(
 /// reference ports into values, and promote the module-level signals left.
 static void addProcessLowering(OpPassManager &pm, bool sroa,
                                bool inferClockPorts) {
+  // Mark the reference ports no other port is bound to the same signal as, so
+  // that a process driving several members of an interface port is lowered.
+  pm.addPass(llhd::createInferNoAliasPortsPass());
   auto &modulePM = pm.nest<hw::HWModuleOp>();
   // See https://github.com/llvm/circt/issues/8804.
   if (sroa)

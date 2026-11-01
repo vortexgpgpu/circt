@@ -33,6 +33,21 @@ namespace llhd {
 unsigned getLLHDTypeWidth(Type type);
 Type getLLHDElementType(Type type);
 
+/// The unit attribute marking a reference port of an `hw.module` that no other
+/// reference port of the module is bound to the same signal as, at any of its
+/// instances (see `llhd-infer-noalias-ports`).
+inline constexpr StringLiteral kNoAliasAttrName = "llhd.noalias";
+
+/// The signal a reference ultimately refers to, looking through projections.
+Value getReferenceRoot(Value ref);
+
+/// Whether `value` is a reference port of the enclosing `hw.module`.
+bool isModuleRefPort(Value value);
+
+/// Whether `value` is a reference port of the enclosing `hw.module` marked
+/// `llhd.noalias`.
+bool isNoAliasPort(Value value);
+
 void registerDestructableIntegerExternalModel(mlir::DialectRegistry &registry);
 
 } // namespace llhd

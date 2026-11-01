@@ -3,6 +3,7 @@ add_circt_dialect_library(CIRCTLLHDTransforms
   Deseq.cpp
   DeseqUtils.cpp
   HoistSignals.cpp
+  InferNoAliasPorts.cpp
   InlineCalls.cpp
   LowerProcesses.cpp
   LowerRefPorts.cpp

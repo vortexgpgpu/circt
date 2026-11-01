@@ -531,3 +531,42 @@ hw.module @ProbeSelectedReference(in %c : i1, in %p : !llhd.ref<i8>, in %q : !ll
   }
   hw.output %0 : i8
 }
+
+// Ports marked `llhd.noalias` are bound to signals no other port is bound to:
+// the drives of a process accessing several of them are hoisted, also next to
+// one unmarked port.
+// CHECK-LABEL: @HoistNoAliasPortDrives
+hw.module @HoistNoAliasPortDrives(in %a : i8, in %b : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8> {llhd.noalias}, in %r : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.combinational -> i8, i8, i8 {
+  // CHECK-NOT: llhd.drv
+  // CHECK: }
+  // CHECK-DAG: llhd.drv %p
+  // CHECK-DAG: llhd.drv %q
+  // CHECK-DAG: llhd.drv %r
+  llhd.combinational {
+    %0 = llhd.prb %q : i8
+    %1 = comb.add %0, %b : i8
+    llhd.drv %p, %a after %t : i8
+    llhd.drv %q, %1 after %t : i8
+    llhd.drv %r, %b after %t : i8
+    llhd.yield
+  }
+}
+
+// An unmarked port next to another unmarked port keeps its drive in the
+// process; the marked port's drive is hoisted.
+// CHECK-LABEL: @NoAliasPortNextToAliasedPorts
+hw.module @NoAliasPortNextToAliasedPorts(in %a : i8, in %b : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8>, in %r : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.combinational -> i8 {
+  // CHECK-NEXT: llhd.drv %q
+  // CHECK-NEXT: llhd.drv %r
+  // CHECK: llhd.drv %p
+  llhd.combinational {
+    llhd.drv %p, %a after %t : i8
+    llhd.drv %q, %a after %t : i8
+    llhd.drv %r, %b after %t : i8
+    llhd.yield
+  }
+}

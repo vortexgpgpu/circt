@@ -45,6 +45,34 @@ Type circt::llhd::getLLHDElementType(Type type) {
   return type;
 }
 
+Value circt::llhd::getReferenceRoot(Value ref) {
+  while (auto *op = ref.getDefiningOp()) {
+    if (!isa<SigArrayGetOp, SigExtractOp, SigStructExtractOp, SigArraySliceOp>(
+            op))
+      break;
+    ref = op->getOperand(0);
+  }
+  return ref;
+}
+
+bool circt::llhd::isModuleRefPort(Value value) {
+  auto arg = dyn_cast<BlockArgument>(value);
+  return arg && isa<RefType>(arg.getType()) &&
+         isa<hw::HWModuleOp>(arg.getOwner()->getParentOp());
+}
+
+bool circt::llhd::isNoAliasPort(Value value) {
+  if (!isModuleRefPort(value))
+    return false;
+  auto arg = cast<BlockArgument>(value);
+  auto module = cast<hw::HWModuleOp>(arg.getOwner()->getParentOp());
+  if (module.getAllPortAttrs().empty())
+    return false;
+  auto attrs = dyn_cast_or_null<DictionaryAttr>(
+      module.getInputAttrs(arg.getArgNumber()));
+  return attrs && attrs.contains(kNoAliasAttrName);
+}
+
 template <typename... OpTypes>
 static bool hasUserOfKind(Operation *op) {
   for (auto *user : op->getUsers()) {

@@ -988,8 +988,6 @@ static bool fieldPathsOverlap(ArrayRef<std::string> a,
 /// we hoist those projections out of the region (they are pure) and promote
 /// each of them as a slot. Bit slices (`llhd.sig.extract`) of such a field
 /// remain projections of the field slot.
-static Value getReferenceRoot(Value ref);
-
 void Promoter::hoistFieldProjections() {
   auto *regionOp = region.getParentOp();
   auto isFieldOp = [](Operation *op) {
@@ -1264,24 +1262,17 @@ void Promoter::localizeNestedProjections() {
   }
 }
 
-/// Identify any promotable slots probed or driven under the current region.
-/// The signal a reference ultimately refers to, looking through projections.
-static Value getReferenceRoot(Value ref) {
-  while (auto *op = ref.getDefiningOp()) {
-    if (!isa<SigArrayGetOp, SigExtractOp, SigStructExtractOp, SigArraySliceOp>(
-            op))
-      break;
-    ref = op->getOperand(0);
-  }
-  return ref;
-}
-
-/// The single reference port of the enclosing module the region accesses, if
-/// every reference it accesses is either that port or rooted at a signal
-/// declared in the module. Another port, or a reference of unknown origin,
-/// may be bound to the same signal, so no port is promotable then.
-static Value getUnaliasedPort(Region &region) {
-  Value port;
+/// The reference ports of the enclosing module the region can treat like
+/// signals declared outside it, provided every other reference it accesses is
+/// rooted at a signal declared in the module: the ports marked `llhd.noalias`,
+/// which no other port is bound to the same signal as, and one more port, if
+/// the region accesses only one unmarked port. Two unmarked ports, or a
+/// reference of unknown origin, may be bound to the same signal; none of them
+/// is promotable then.
+static SmallPtrSet<Value, 4> getUnaliasedPorts(Region &region) {
+  SmallPtrSet<Value, 4> ports;
+  Value unmarked;
+  bool multipleUnmarked = false;
   bool unknown = false;
   region.walk([&](Operation *op) {
     for (auto operand : op->getOperands()) {
@@ -1290,24 +1281,32 @@ static Value getUnaliasedPort(Region &region) {
       auto root = getReferenceRoot(operand);
       if (root.getDefiningOp<SignalOp>())
         continue;
-      auto arg = dyn_cast<BlockArgument>(root);
-      if (!arg || !isa<hw::HWModuleOp>(arg.getOwner()->getParentOp()) ||
-          (port && port != root)) {
+      if (!isModuleRefPort(root)) {
         unknown = true;
         return WalkResult::interrupt();
       }
-      port = root;
+      if (isNoAliasPort(root))
+        ports.insert(root);
+      else if (unmarked && unmarked != root)
+        multipleUnmarked = true;
+      else
+        unmarked = root;
     }
     return WalkResult::advance();
   });
-  return unknown ? Value{} : port;
+  if (unknown)
+    return {};
+  if (unmarked && !multipleUnmarked)
+    ports.insert(unmarked);
+  return ports;
 }
 
+/// Identify any promotable slots probed or driven under the current region.
 void Promoter::findPromotableSlots() {
   SmallPtrSet<Value, 8> seenSlots;
   SmallPtrSet<Operation *, 8> checkedUsers;
   SmallVector<Operation *, 8> userWorklist;
-  auto unaliasedPort = getUnaliasedPort(region);
+  auto unaliasedPorts = getUnaliasedPorts(region);
 
   region.walk([&](Operation *op) {
     for (auto operand : op->getOperands()) {
@@ -1316,11 +1315,10 @@ void Promoter::findPromotableSlots() {
 
       // We can only promote probes and drives on a locally-defined signal.
       // Other signals, such as the ones brought into a module through a port,
-      // have an unknown aliasing relationship with the other ports; a port is
-      // promotable only if the region accesses no other port.
+      // may be bound to the same signal as another port; a port is promotable
+      // only if no other port the region accesses may be.
       if (!operand.getDefiningOp<llhd::SignalOp>() &&
-          !fieldSlots.contains(operand) &&
-          !(unaliasedPort && operand == unaliasedPort))
+          !fieldSlots.contains(operand) && !unaliasedPorts.contains(operand))
         continue;
 
       // Ensure the slot is not used in any way we cannot reason about.

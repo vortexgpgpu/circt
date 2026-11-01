@@ -270,6 +270,17 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
       port.name = StringAttr::get(&getContext(), port.name.getValue() + "_in");
   }
   module.setHWModuleType(hw::ModuleType::get(&getContext(), ports));
+  // A value port is not a reference: drop the reference port's alias mark.
+  if (!module.getAllPortAttrs().empty()) {
+    SmallVector<Attribute> attrs(module.getAllPortAttrs());
+    for (auto i : readPorts) {
+      auto &attr = attrs[type.getPortIdForInputId(i)];
+      NamedAttrList portAttrs(cast_or_null<DictionaryAttr>(attr));
+      if (portAttrs.erase(kNoAliasAttrName))
+        attr = portAttrs.getDictionary(&getContext());
+    }
+    module.setAllPortAttrs(attrs);
+  }
 
   // Driven ports and slices: the driven values become new outputs.
   SmallVector<TimeAttr> writeDelays;

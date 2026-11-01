@@ -1812,3 +1812,56 @@ hw.module @PortsMayAlias(in %c : i1, in %a : i8, in %p : !llhd.ref<i8>, in %q : 
     llhd.yield
   }
 }
+
+// Ports marked `llhd.noalias` are bound to signals no other port is bound to,
+// so a process accessing several of them promotes each, along with the one
+// unmarked port it accesses.
+// CHECK-LABEL: @NoAliasPorts
+hw.module @NoAliasPorts(in %c : i1, in %a : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8> {llhd.noalias}, in %r : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  // CHECK: llhd.combinational {
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2
+  ^bb1:
+    // CHECK-NOT: llhd.drv
+    llhd.drv %p, %a after %t : i8
+    llhd.drv %q, %a after %t : i8
+    llhd.drv %r, %a after %t : i8
+    cf.br ^bb3
+  ^bb2:
+    llhd.drv %q, %a after %t : i8
+    cf.br ^bb3
+  ^bb3:
+    // CHECK: ^bb3(
+    // CHECK-DAG: llhd.drv %p, {{%.+}} after {{%.+}} if
+    // CHECK-DAG: llhd.drv %q, %a after {{%.+}} :
+    // CHECK-DAG: llhd.drv %r, {{%.+}} after {{%.+}} if
+    // CHECK: llhd.yield
+    llhd.yield
+  }
+}
+
+// Two unmarked ports may still be bound to the same signal; neither is
+// promoted, while the marked port is.
+// CHECK-LABEL: @NoAliasPortWithAliasedPorts
+hw.module @NoAliasPortWithAliasedPorts(in %c : i1, in %a : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8>, in %r : !llhd.ref<i8>) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  llhd.combinational {
+    cf.cond_br %c, ^bb1, ^bb2
+  ^bb1:
+    // CHECK: ^bb1:
+    // CHECK-NEXT: llhd.drv %q, %a
+    llhd.drv %p, %a after %t : i8
+    llhd.drv %q, %a after %t : i8
+    cf.br ^bb3
+  ^bb2:
+    // CHECK: ^bb2:
+    // CHECK-NEXT: llhd.drv %r, %a
+    llhd.drv %r, %a after %t : i8
+    cf.br ^bb3
+  ^bb3:
+    // CHECK: ^bb3(
+    // CHECK: llhd.drv %p, {{%.+}} after {{%.+}} if
+    llhd.yield
+  }
+}

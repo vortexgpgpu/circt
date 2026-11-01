@@ -152,3 +152,19 @@ hw.module @UseDriveInProcess(in %v : i8) {
   %x = llhd.sig %c0 : <i8>
   hw.instance "d" @DriveInProcess(p: %x: !llhd.ref<i8>, v: %v: i8) -> ()
 }
+
+// A lowered port is no reference anymore and loses its `llhd.noalias` mark.
+// CHECK-LABEL: hw.module private @NoAliasMark(in %a : i8, in %b_in : i8, out b : i8)
+hw.module private @NoAliasMark(in %a : !llhd.ref<i8> {llhd.noalias}, in %b : !llhd.ref<i8> {llhd.noalias}) {
+  %t = llhd.constant_time <0ns, 0d, 1e>
+  %0 = llhd.prb %a : i8
+  %1 = llhd.prb %b : i8
+  %2 = comb.add %0, %1 : i8
+  llhd.drv %b, %2 after %t : i8
+}
+hw.module @UseNoAliasMark() {
+  %c0 = hw.constant 0 : i8
+  %x = llhd.sig %c0 : <i8>
+  %y = llhd.sig %c0 : <i8>
+  hw.instance "n" @NoAliasMark(a: %x: !llhd.ref<i8>, b: %y: !llhd.ref<i8>) -> ()
+}
