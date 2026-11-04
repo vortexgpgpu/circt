@@ -418,8 +418,16 @@ Cut::getInputArrivalTimes(CutEnumerator &enumerator,
   // Compute arrival times for each input.
   for (auto inputIndex : inputs) {
     if (isAlwaysCutInput(network, inputIndex)) {
-      // If the input is a primary input, it has no delay.
-      results.push_back(0);
+      // A primary input arrives at 0, or when the arrival time model has it
+      // (the result of an adder, a comparator or a memory read).
+      DelayType arrival = 0;
+      if (enumerator.getOptions().arrivalTimeModel &&
+          network.getGate(inputIndex).getKind() ==
+              LogicNetworkGate::PrimaryInput)
+        arrival =
+            enumerator.getArrivalTime(network.getValue(inputIndex), 0)
+                .value_or(0);
+      results.push_back(arrival);
       continue;
     }
     auto *cutSet = enumerator.getCutSet(inputIndex);
@@ -927,6 +935,7 @@ CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
 
 void CutEnumerator::clear() {
   cutSets.clear();
+  arrivalTimes.clear();
   processingOrder.clear();
   logicNetwork.clear();
   cutAllocator.DestroyAll();
@@ -1161,6 +1170,7 @@ LogicalResult CutEnumerator::enumerateCuts(
 
   // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
+  arrivalTimes.clear();
 
   // Build the flat logic network representation for efficient simulation
   auto &block = topOp->getRegion(0).getBlocks().front();
@@ -1172,7 +1182,14 @@ LogicalResult CutEnumerator::enumerateCuts(
     if (!gate.isLogicGate())
       continue;
 
-    // Ensure cut set exists for each logic gate
+    // Ensure cut set exists for each logic gate. With an arrival time model,
+    // a gate may have been visited already, in the cone of a value the
+    // network does not map.
+    if (options.arrivalTimeModel) {
+      if (failed(visitLogicCone(index)))
+        return failure();
+      continue;
+    }
     if (failed(visitLogicOp(index)))
       return failure();
   }
@@ -1195,6 +1212,112 @@ const CutSet *CutEnumerator::getCutSet(uint32_t index) {
   }
 
   return it->second;
+}
+
+LogicalResult CutEnumerator::visitLogicCone(uint32_t root) {
+  if (cutSets.contains(root))
+    return success();
+  // The logic gates a gate reads.
+  auto fanins = [&](uint32_t index, SmallVectorImpl<uint32_t> &result) {
+    const auto &gate = logicNetwork.getGate(index);
+    if (gate.getKind() == LogicNetworkGate::Choice) {
+      for (Value operand :
+           cast<synth::ChoiceOp>(gate.getOperation()).getInputs())
+        result.push_back(logicNetwork.getIndex(operand));
+      return;
+    }
+    for (unsigned i = 0, e = gate.getNumFanins(); i < e; ++i)
+      result.push_back(gate.edges[i].getIndex());
+  };
+  // Depth first, each gate after its fanins: the network's logic gates form
+  // no cycle.
+  SmallVector<std::pair<uint32_t, bool>> stack{{root, false}};
+  SmallVector<uint32_t, 3> operands;
+  while (!stack.empty()) {
+    auto [index, expanded] = stack.pop_back_val();
+    if (cutSets.contains(index))
+      continue;
+    if (expanded) {
+      if (failed(visitLogicOp(index)))
+        return failure();
+      continue;
+    }
+    stack.push_back({index, true});
+    operands.clear();
+    fanins(index, operands);
+    for (uint32_t operand : operands)
+      if (logicNetwork.getGate(operand).isLogicGate() &&
+          !cutSets.contains(operand))
+        stack.push_back({operand, false});
+  }
+  return success();
+}
+
+std::optional<DelayType> CutEnumerator::getArrivalTime(Value value,
+                                                       unsigned bit) {
+  auto key = std::make_pair(value, bit);
+  if (auto it = arrivalTimes.find(key); it != arrivalTimes.end())
+    return it->second;
+  // A value met again before its arrival time is known closes a
+  // combinational loop: 0 there.
+  arrivalTimes[key] = 0;
+
+  auto compute = [&]() -> std::optional<DelayType> {
+    // A gate the network maps: the arrival time of its best cut, after its
+    // cone.
+    if (value.getType().isInteger(1) && logicNetwork.hasIndex(value)) {
+      uint32_t index = logicNetwork.getIndex(value);
+      const auto &gate = logicNetwork.getGate(index);
+      if (gate.getKind() == LogicNetworkGate::Constant)
+        return std::nullopt;
+      if (gate.isLogicGate()) {
+        if (failed(visitLogicCone(index)))
+          return 0;
+        // A gate whose cut set is being finalized (a loop through values the
+        // network does not map) has no best cut yet.
+        const auto *best = cutSets.lookup(index)->getBestMatchedCut();
+        if (!best)
+          return 0;
+        return best->getMatchedPattern()->getArrivalTime(
+            cast<OpResult>(logicNetwork.getValue(index)).getResultNumber());
+      }
+    }
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return 0;
+    Operation *op = result.getOwner();
+    // Wiring and constants.
+    if (isa<hw::ConstantOp>(op))
+      return std::nullopt;
+    if (auto extract = dyn_cast<comb::ExtractOp>(op))
+      return getArrivalTime(extract.getInput(), extract.getLowBit() + bit);
+    if (auto concat = dyn_cast<comb::ConcatOp>(op)) {
+      // Operands from the most significant.
+      unsigned low = hw::getBitWidth(concat.getType());
+      for (Value operand : concat.getInputs()) {
+        low -= hw::getBitWidth(operand.getType());
+        if (bit >= low)
+          return getArrivalTime(operand, bit - low);
+      }
+      return 0;
+    }
+    if (auto replicate = dyn_cast<comb::ReplicateOp>(op)) {
+      Value input = replicate.getInput();
+      return getArrivalTime(input, bit % hw::getBitWidth(input.getType()));
+    }
+    if (auto wire = dyn_cast<hw::WireOp>(op))
+      return getArrivalTime(wire.getInput(), bit);
+    if (auto bitcast = dyn_cast<hw::BitcastOp>(op))
+      if (isa<IntegerType>(bitcast.getInput().getType()))
+        return getArrivalTime(bitcast.getInput(), bit);
+    return options.arrivalTimeModel->getArrivalTime(
+        result, bit, [&](Value operand, unsigned operandBit) {
+          return getArrivalTime(operand, operandBit);
+        });
+  };
+  std::optional<DelayType> arrival = compute();
+  arrivalTimes[key] = arrival;
+  return arrival;
 }
 
 /// Generate a human-readable name for a value used in test output.

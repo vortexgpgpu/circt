@@ -77,10 +77,21 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
     This pass performs technology mapping using generic K-input lookup tables
     (LUTs). It converts combinational logic networks into implementations
     using K-input LUTs (comb.truth_table) with unit area cost and delay.
+
+    With `carry-block-size` (the bits of the target's carry blocks, 8 for
+    CARRY8 / LOOKAHEAD8), the word-level operations the mapper leaves to carry
+    chains and distributed RAMs (`comb.add`, `comb.sub`, `comb.icmp`, reads of
+    `seq.firmem` of latency 0) deliver their bits in LUT levels after their
+    operands, so a timing-oriented mapping does not bury a late carry under a
+    deep cone. Without it they arrive at 0, as registers do.
   }];
   let options = baseOptions # [
     Option<"maxLutSize", "max-lut-size", "unsigned", /*default=*/"6",
-           "Maximum number of inputs per LUT">
+           "Maximum number of inputs per LUT">,
+    Option<"carryBlockSize", "carry-block-size", "unsigned", /*default=*/"0",
+           "Bits per carry block of the carry chains word-level adders and "
+           "comparators map to; nonzero times their outputs (and LUT RAM "
+           "reads) from their operands' arrival times">
   ];
   let dependentDialects = ["comb::CombDialect"];
 }

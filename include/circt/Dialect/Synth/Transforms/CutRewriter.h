@@ -57,6 +57,29 @@ FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
 // Cut Data Structures
 //===----------------------------------------------------------------------===//
 
+/// When the values a cut rewriter takes as primary inputs, but does not map,
+/// arrive: the results of word-level operations left to a carry chain, a DSP
+/// or a RAM (adders, order comparisons, memory reads), whose bits feed the
+/// logic network through `comb.extract`. Without a model they arrive at 0, as
+/// a register's output does, so a delay-oriented mapping cannot tell a carry
+/// chain's late output from an early input and may bury it under a deep cone.
+class ArrivalTimeModel {
+public:
+  virtual ~ArrivalTimeModel() = default;
+
+  /// The arrival time of bit `bit` of `result`, the result of an operation
+  /// the network does not map and that is not wiring (`comb.extract`,
+  /// `comb.concat`, `comb.replicate`, `hw.bitcast`, `hw.wire`, constants,
+  /// which the cut enumerator looks through). `arrival(value, bit)` is the
+  /// arrival time of a bit of another value (an operand), std::nullopt for a
+  /// constant bit. A result that starts a path (a register, an instance's
+  /// output) arrives at 0.
+  virtual DelayType getArrivalTime(
+      mlir::OpResult result, unsigned bit,
+      llvm::function_ref<std::optional<DelayType>(mlir::Value, unsigned)>
+          arrival) const = 0;
+};
+
 // Forward declarations
 class CutRewritePatternSet;
 class CutRewriter;
@@ -592,6 +615,10 @@ struct CutRewriterOptions {
 
   /// Optional lookup table used to accelerate 4-input NPN canonicalization.
   const NPNTable *npnTable = nullptr;
+
+  /// Optional model of when the values the network does not map arrive. Null:
+  /// every primary input arrives at time 0.
+  const ArrivalTimeModel *arrivalTimeModel = nullptr;
 };
 
 //===----------------------------------------------------------------------===//
@@ -676,11 +703,27 @@ public:
   /// Get the processing order.
   ArrayRef<uint32_t> getProcessingOrder() const { return processingOrder; }
 
+  /// The arrival time of bit `bit` of `value` as a cut input sees it, with
+  /// the options' arrival time model: a mapped gate's from its best cut (its
+  /// cone visited first if it was not yet), a value the network does not map
+  /// from the model and the arrival times of its operands, through wiring.
+  /// std::nullopt for a constant bit.
+  std::optional<DelayType> getArrivalTime(Value value, unsigned bit);
+
 private:
   /// Visit a combinational logic operation and generate cuts.
   /// This handles the core cut enumeration logic for operations
   /// like AND, OR, XOR, etc.
   LogicalResult visitLogicOp(uint32_t nodeIndex);
+
+  /// Visit the logic gate at `index` after every logic gate of its cone not
+  /// visited yet: a value the network does not map may depend on gates that
+  /// come later in the block than the gates that read it.
+  LogicalResult visitLogicCone(uint32_t index);
+
+  /// The arrival times getArrivalTime computed, by value and bit.
+  llvm::DenseMap<std::pair<Value, unsigned>, std::optional<DelayType>>
+      arrivalTimes;
 
   /// Maps indices to their associated cut sets.
   /// CutSets are allocated from the bump allocator.

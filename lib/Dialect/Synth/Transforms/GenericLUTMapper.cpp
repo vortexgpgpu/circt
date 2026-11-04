@@ -14,6 +14,7 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/LLVM.h"
@@ -105,6 +106,119 @@ struct GenericLUT : public CutRewritePattern {
 };
 
 //===----------------------------------------------------------------------===//
+// Carry Chain Arrival Model
+//===----------------------------------------------------------------------===//
+
+/// When the word-level operations a LUT mapper leaves to an FPGA's carry
+/// chains and distributed RAMs deliver their bits, in LUT levels: a LUT that
+/// computes propagate and generate, then a level per carry block from the
+/// input bit's block to the output bit's; an adder or comparator over at most
+/// K input bits is one K-LUT; an equality is a tree of K-LUTs over its bits;
+/// a read of a memory of latency 0 is a LUT RAM of 2^K words and a level of
+/// multiplexers per doubling beyond it, from the address. Other combinational
+/// operations (products, quotients) are at least a level after their latest
+/// operand; everything else (a register, an instance) starts a path.
+struct CarryChainArrivalModel : public ArrivalTimeModel {
+  unsigned lutSize, carryBits;
+
+  CarryChainArrivalModel(unsigned lutSize, unsigned carryBits)
+      : lutSize(lutSize), carryBits(carryBits) {}
+
+  /// Levels from input bit `in` of a carry chain to output bit `out`.
+  DelayType carry(unsigned in, unsigned out) const {
+    return 2 + out / carryBits - in / carryBits;
+  }
+
+  /// Levels of a tree of K-LUTs over `n` signals.
+  DelayType lutTree(uint64_t n) const {
+    DelayType levels = 0;
+    for (uint64_t reach = 1; reach < n; reach *= lutSize)
+      ++levels;
+    return levels;
+  }
+
+  DelayType getArrivalTime(
+      OpResult result, unsigned bit,
+      llvm::function_ref<std::optional<DelayType>(Value, unsigned)> arrival)
+      const override {
+    Operation *op = result.getOwner();
+    // The non-constant bits of the operands up to bit `top`: arrival, index.
+    using Bits = SmallVectorImpl<std::pair<DelayType, unsigned>>;
+    auto inputBits = [&](unsigned top, Bits &bits) {
+      for (Value operand : op->getOperands()) {
+        int64_t width = hw::getBitWidth(operand.getType());
+        for (int64_t i = 0; i < width && i <= top; ++i)
+          if (auto time = arrival(operand, i))
+            bits.push_back({*time, i});
+      }
+    };
+    // A carry chain to bit `out`, or one LUT over few bits.
+    auto chain = [&](ArrayRef<std::pair<DelayType, unsigned>> bits,
+                     unsigned out) {
+      DelayType time = 0;
+      for (auto [inTime, in] : bits)
+        time = std::max(time, inTime + (bits.size() <= lutSize
+                                            ? 1
+                                            : carry(in, out)));
+      return time;
+    };
+    SmallVector<std::pair<DelayType, unsigned>> bits;
+    if (isa<comb::AddOp, comb::SubOp>(op)) {
+      inputBits(bit, bits);
+      return chain(bits, bit);
+    }
+    if (auto icmp = dyn_cast<comb::ICmpOp>(op)) {
+      inputBits(~0u, bits);
+      if (bits.empty())
+        return 0;
+      auto predicate = icmp.getPredicate();
+      if (predicate == comb::ICmpPredicate::eq ||
+          predicate == comb::ICmpPredicate::ne ||
+          predicate == comb::ICmpPredicate::ceq ||
+          predicate == comb::ICmpPredicate::cne ||
+          predicate == comb::ICmpPredicate::weq ||
+          predicate == comb::ICmpPredicate::wne) {
+        DelayType time = 0;
+        for (auto [inTime, in] : bits)
+          time = std::max(time, inTime);
+        return time + 1 + lutTree(llvm::divideCeil(bits.size(), lutSize));
+      }
+      // The chain ends at the highest bit that is not constant.
+      unsigned top = 0;
+      for (auto [inTime, in] : bits)
+        top = std::max(top, in);
+      return chain(bits, top);
+    }
+    if (auto read = dyn_cast<seq::FirMemReadOp>(op)) {
+      auto memory = read.getMemory().getDefiningOp<seq::FirMemOp>();
+      if (!memory || memory.getReadLatency() != 0)
+        return 0;
+      DelayType levels =
+          1 + std::max<int64_t>(
+                  0, (int64_t)llvm::Log2_64_Ceil(memory.getType().getDepth()) -
+                         (int64_t)lutSize);
+      DelayType time = 0;
+      for (int64_t i = 0, e = hw::getBitWidth(read.getAddress().getType());
+           i < e; ++i)
+        if (auto inTime = arrival(read.getAddress(), i))
+          time = std::max(time, *inTime + levels);
+      if (Value enable = read.getEnable())
+        if (auto inTime = arrival(enable, 0))
+          time = std::max(time, *inTime + 1);
+      return time;
+    }
+    if (isa<comb::CombDialect>(op->getDialect())) {
+      inputBits(~0u, bits);
+      DelayType time = 0;
+      for (auto [inTime, in] : bits)
+        time = std::max(time, inTime + 1);
+      return time;
+    }
+    return 0;
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Generic LUT Mapper Pass
 //===----------------------------------------------------------------------===//
 
@@ -121,6 +235,11 @@ struct GenericLUTMapperPass
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = false;
     options.attachDebugTiming = test;
+    std::optional<CarryChainArrivalModel> arrivalTimeModel;
+    if (carryBlockSize) {
+      arrivalTimeModel.emplace(maxLutSize, carryBlockSize);
+      options.arrivalTimeModel = &*arrivalTimeModel;
+    }
 
     // Create the pattern for generic K-LUT
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
