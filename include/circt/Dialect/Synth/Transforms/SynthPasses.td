@@ -84,6 +84,13 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
     `seq.firmem` of latency 0) deliver their bits in LUT levels after their
     operands, so a timing-oriented mapping does not bury a late carry under a
     deep cone. Without it they arrive at 0, as registers do.
+
+    With it, a module mapped apart from its hierarchy also takes its input
+    ports' arrival times from `synth.input_arrival_times` on the `hw.module`,
+    and its instances' outputs' from `synth.output_arrival_times` on each
+    `hw.instance`: an array with an entry per port, a `DenseI64ArrayAttr` of
+    per-bit arrival times in LUT levels (one element for every bit, none for
+    0), as a timing pass over the whole hierarchy computes them.
   }];
   let options = baseOptions # [
     Option<"maxLutSize", "max-lut-size", "unsigned", /*default=*/"6",

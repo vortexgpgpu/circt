@@ -101,3 +101,52 @@ hw.module @late_select(in %a : i16, in %b : i16, in %x : i6, in %y : i6,
   %ae = comb.concat %ahi, %a0e : i15, i1
   hw.output %o : i1
 }
+
+// A module mapped apart from its hierarchy: its input port `sel` arrives at
+// level 5 (from its instances' drivers), and its instance's output `late` at
+// level 4. Both select between cones of a LUT level each, so the mapper keeps
+// them for the last LUT: 6 and 5. Without the attributes they arrive at 0.
+// CHECK-LABEL: hw.module @late_ports
+// ARR:         comb.truth_table {{.*}}%sel -> {{.*}}test.arrival_times = [6]
+// ARR:         %[[L:[0-9]+]] = comb.extract %src.late from 1
+// ARR-NEXT:    comb.truth_table %[[L]], {{.*}}test.arrival_times = [5]
+// ZERO:        comb.truth_table {{.*}} -> {{.*}}test.arrival_times = [2]
+// ZERO:        comb.truth_table {{.*}} -> {{.*}}test.arrival_times = [2]
+hw.module.extern @Source(out late : i2)
+hw.module @late_ports(in %x : i6, in %y : i6, in %sel : i1, out o : i1,
+                      out p : i1) attributes {
+    synth.input_arrival_times = [array<i64>, array<i64>, array<i64: 5>]} {
+  %x0 = comb.extract %x from 0 : (i6) -> i1
+  %x1 = comb.extract %x from 1 : (i6) -> i1
+  %x2 = comb.extract %x from 2 : (i6) -> i1
+  %x3 = comb.extract %x from 3 : (i6) -> i1
+  %x4 = comb.extract %x from 4 : (i6) -> i1
+  %x5 = comb.extract %x from 5 : (i6) -> i1
+  %y0 = comb.extract %y from 0 : (i6) -> i1
+  %y1 = comb.extract %y from 1 : (i6) -> i1
+  %y2 = comb.extract %y from 2 : (i6) -> i1
+  %y3 = comb.extract %y from 3 : (i6) -> i1
+  %y4 = comb.extract %y from 4 : (i6) -> i1
+  %y5 = comb.extract %y from 5 : (i6) -> i1
+  %0 = synth.aig.and_inv %x0, %x1 : i1
+  %1 = synth.aig.and_inv %x2, %x3 : i1
+  %2 = synth.aig.and_inv %x4, %x5 : i1
+  %3 = synth.aig.and_inv %0, %1 : i1
+  %X = synth.aig.and_inv %3, %2 : i1
+  %4 = synth.aig.and_inv %y0, %y1 : i1
+  %5 = synth.aig.and_inv %y2, %y3 : i1
+  %6 = synth.aig.and_inv %y4, %y5 : i1
+  %7 = synth.aig.and_inv %4, %5 : i1
+  %Y = synth.aig.and_inv %7, %6 : i1
+  %8 = synth.aig.and_inv %sel, %X : i1
+  %9 = synth.aig.and_inv not %sel, %Y : i1
+  %o = synth.aig.and_inv not %8, not %9 : i1
+  // Bit 1 of the instance's output is late; bit 0 is not.
+  %late = hw.instance "src" @Source() -> (late: i2) {
+      synth.output_arrival_times = [array<i64: 0, 4>]}
+  %l = comb.extract %late from 1 : (i2) -> i1
+  %10 = synth.aig.and_inv %l, %X : i1
+  %11 = synth.aig.and_inv not %l, %Y : i1
+  %p = synth.aig.and_inv not %10, not %11 : i1
+  hw.output %o, %p : i1, i1
+}

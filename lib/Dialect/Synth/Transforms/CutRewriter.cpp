@@ -1284,7 +1284,8 @@ std::optional<DelayType> CutEnumerator::getArrivalTime(Value value,
     }
     auto result = dyn_cast<OpResult>(value);
     if (!result)
-      return 0;
+      return options.arrivalTimeModel->getArgumentArrivalTime(
+          cast<BlockArgument>(value), bit);
     Operation *op = result.getOwner();
     // Wiring and constants.
     if (isa<hw::ConstantOp>(op))

@@ -117,12 +117,39 @@ struct GenericLUT : public CutRewritePattern {
 /// a read of a memory of latency 0 is a LUT RAM of 2^K words and a level of
 /// multiplexers per doubling beyond it, from the address. Other combinational
 /// operations (products, quotients) are at least a level after their latest
-/// operand; everything else (a register, an instance) starts a path.
+/// operand; a register starts a path.
+///
+/// A module mapped apart from the rest of its hierarchy can be told when its
+/// boundary signals arrive, in the same LUT levels: `synth.input_arrival_times`
+/// on an `hw.module` for its input ports, `synth.output_arrival_times` on an
+/// `hw.instance` for its results. Each is an array with an entry per port, a
+/// `DenseI64ArrayAttr` of per-bit arrival times (one element for every bit,
+/// none for 0). Without them those signals start a path, at 0.
 struct CarryChainArrivalModel : public ArrivalTimeModel {
   unsigned lutSize, carryBits;
 
   CarryChainArrivalModel(unsigned lutSize, unsigned carryBits)
       : lutSize(lutSize), carryBits(carryBits) {}
+
+  /// Bit `bit` of port `index` in a boundary arrival attribute.
+  static DelayType boundary(Attribute attr, unsigned index, unsigned bit) {
+    auto ports = dyn_cast_or_null<ArrayAttr>(attr);
+    if (!ports || index >= ports.size())
+      return 0;
+    auto bits = dyn_cast<mlir::DenseI64ArrayAttr>(ports[index]);
+    if (!bits || bits.empty())
+      return 0;
+    return bits[bits.size() == 1 ? 0 : std::min<size_t>(bit, bits.size() - 1)];
+  }
+
+  DelayType getArgumentArrivalTime(BlockArgument argument,
+                                   unsigned bit) const override {
+    auto *parent = argument.getOwner()->getParentOp();
+    if (!isa_and_nonnull<hw::HWModuleOp>(parent))
+      return 0;
+    return boundary(parent->getAttr("synth.input_arrival_times"),
+                    argument.getArgNumber(), bit);
+  }
 
   /// Levels from input bit `in` of a carry chain to output bit `out`.
   DelayType carry(unsigned in, unsigned out) const {
@@ -207,6 +234,9 @@ struct CarryChainArrivalModel : public ArrivalTimeModel {
           time = std::max(time, *inTime + 1);
       return time;
     }
+    if (isa<hw::InstanceOp>(op))
+      return boundary(op->getAttr("synth.output_arrival_times"),
+                      result.getResultNumber(), bit);
     if (isa<comb::CombDialect>(op->getDialect())) {
       inputBits(~0u, bits);
       DelayType time = 0;

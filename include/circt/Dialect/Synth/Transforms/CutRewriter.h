@@ -72,12 +72,20 @@ public:
   /// `comb.concat`, `comb.replicate`, `hw.bitcast`, `hw.wire`, constants,
   /// which the cut enumerator looks through). `arrival(value, bit)` is the
   /// arrival time of a bit of another value (an operand), std::nullopt for a
-  /// constant bit. A result that starts a path (a register, an instance's
-  /// output) arrives at 0.
+  /// constant bit. A result that starts a path (a register) arrives at 0; an
+  /// instance's output arrives when the model knows its module delivers it.
   virtual DelayType getArrivalTime(
       mlir::OpResult result, unsigned bit,
       llvm::function_ref<std::optional<DelayType>(mlir::Value, unsigned)>
           arrival) const = 0;
+
+  /// The arrival time of bit `bit` of a block argument (a module's input
+  /// port): 0 unless the model knows when the module's instances drive it, as
+  /// a mapping of one module of a hierarchy at a time may.
+  virtual DelayType getArgumentArrivalTime(mlir::BlockArgument argument,
+                                           unsigned bit) const {
+    return 0;
+  }
 };
 
 // Forward declarations
