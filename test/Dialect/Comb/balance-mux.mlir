@@ -1,5 +1,6 @@
 // RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(comb-balance-mux{mux-chain-threshold=4}))' | FileCheck %s
 // RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(comb-balance-mux{mux-chain-threshold=2}))' | FileCheck %s --check-prefix=MIN2
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(comb-balance-mux{mux-chain-threshold=5}))' | FileCheck %s --check-prefix=ENC
 
 // CHECK-LABEL: hw.module @priori_mux_false_side_chain
 hw.module @priori_mux_false_side_chain(in %cond0: i1, in %cond1: i1, in %cond2: i1, in %cond3: i1, in %cond4: i1, out output: i32) {
@@ -143,4 +144,52 @@ hw.module @test_min_conditions_2(in %cond0: i1, in %cond1: i1, in %cond2: i1, ou
   %mux1 = comb.mux %cond0, %c1_i32, %mux2 : i32
 
   hw.output %mux1 : i32
+}
+
+// A priority chain selected under an enclosing condition (`en ? chain : x`,
+// a loop's last match taken only when enabled): the user mux continues its
+// chain on the true side, through %r0's true value (not a mux), so the chain
+// on %r0's false side is rebalanced from %r0. (At a threshold of 4 the
+// enclosing mux's true-side spine of the new tree, four conditions, is
+// rebalanced once more, equally exact.)
+// CHECK-LABEL: hw.module @chain_under_enclosing_mux
+// ENC-LABEL: hw.module @chain_under_enclosing_mux
+// MIN2-LABEL: hw.module @chain_under_enclosing_mux
+// MIN2: hw.output
+hw.module @chain_under_enclosing_mux(in %en: i1, in %cond0: i1, in %cond1: i1, in %cond2: i1, in %cond3: i1, in %cond4: i1, in %held: i32, out output: i32) {
+  %c1_i32 = hw.constant 1 : i32
+  %c2_i32 = hw.constant 2 : i32
+  %c3_i32 = hw.constant 3 : i32
+  %c4_i32 = hw.constant 4 : i32
+  %c5_i32 = hw.constant 5 : i32
+  // ENC:      %[[MUX0:.*]] = comb.mux %cond0, %c1_i32, %c2_i32 : i32
+  // ENC-NEXT: %[[OR1:.*]] = comb.or bin %cond0, %cond1 : i1
+  // ENC-NEXT: %[[MUX1:.*]] = comb.mux %[[OR1]], %[[MUX0]], %c3_i32 : i32
+  // ENC-NEXT: %[[MUX2:.*]] = comb.mux %cond4, %c5_i32, %held : i32
+  // ENC-NEXT: %[[MUX3:.*]] = comb.mux %cond3, %c4_i32, %[[MUX2]] : i32
+  // ENC-NEXT: %[[OR2:.*]] = comb.or bin %cond0, %cond1, %cond2 : i1
+  // ENC-NEXT: %[[MUX4:.*]] = comb.mux %[[OR2]], %[[MUX1]], %[[MUX3]] : i32
+  // ENC-NEXT: %[[OUT:.*]] = comb.mux %en, %[[MUX4]], %held : i32
+  // ENC-NEXT: hw.output %[[OUT]] : i32
+  %r4 = comb.mux %cond4, %c5_i32, %held : i32
+  %r3 = comb.mux %cond3, %c4_i32, %r4 : i32
+  %r2 = comb.mux %cond2, %c3_i32, %r3 : i32
+  %r1 = comb.mux %cond1, %c2_i32, %r2 : i32
+  %r0 = comb.mux %cond0, %c1_i32, %r1 : i32
+  %out = comb.mux %en, %r0, %held : i32
+  hw.output %out : i32
+}
+
+
+// A chain of two conditions is left as it is at any threshold: rebuilt it is
+// itself again (this looped without end at a threshold of 2).
+// CHECK-LABEL: hw.module @two_chain
+// MIN2-LABEL: hw.module @two_chain
+// MIN2-NEXT: %[[M1:.+]] = comb.mux %cond1, %b, %d : i32
+// MIN2-NEXT: %[[M0:.+]] = comb.mux %cond0, %a, %[[M1]] : i32
+// MIN2-NEXT: hw.output %[[M0]] : i32
+hw.module @two_chain(in %cond0: i1, in %cond1: i1, in %a: i32, in %b: i32, in %d: i32, out output: i32) {
+  %m1 = comb.mux %cond1, %b, %d : i32
+  %m0 = comb.mux %cond0, %a, %m1 : i32
+  hw.output %m0 : i32
 }

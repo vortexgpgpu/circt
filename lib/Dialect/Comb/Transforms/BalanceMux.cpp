@@ -70,16 +70,29 @@ public:
 /// - OR gates: Creates additional O(n log n) OR gates to combine
 class PriorityMuxReshape : public OpRewritePattern<MuxOp> {
   unsigned muxChainThreshold;
+  /// The muxes of the trees this pattern built (the pass's own set).
+  DenseSet<Operation *> *built;
 
 public:
-  PriorityMuxReshape(MLIRContext *context, unsigned muxChainThreshold)
+  PriorityMuxReshape(MLIRContext *context, unsigned muxChainThreshold,
+                     DenseSet<Operation *> *built)
       : OpRewritePattern<MuxOp>(context, /*benefit=*/1),
-        muxChainThreshold(muxChainThreshold) {}
+        muxChainThreshold(muxChainThreshold), built(built) {}
 
   LogicalResult matchAndRewrite(MuxOp op,
                                 PatternRewriter &rewriter) const override;
 
 private:
+  /// Whether `user`'s chain (collectChain from `user`) walks on through `op`.
+  static bool continuesChainOf(MuxOp user, MuxOp op);
+
+  /// `mux`, recorded as a mux of a tree this pattern built.
+  Value record(Value mux) const {
+    if (auto op = mux.getDefiningOp<MuxOp>())
+      built->insert(op);
+    return mux;
+  }
+
   /// Helper function to collect a mux chain from a given side
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Location>>
   collectChain(MuxOp op, bool isFalseSide) const;
@@ -98,10 +111,20 @@ private:
 
 LogicalResult
 PriorityMuxReshape::matchAndRewrite(MuxOp op, PatternRewriter &rewriter) const {
-  // Make sure that we're not looking at the intermediate node in a mux tree.
+  // Make sure that we're not looking at the intermediate node in a mux chain:
+  // a user mux takes this op into its own chain only on the side its chain
+  // runs (the one mux operand of the user), and walks on through this op only
+  // if it continues on that same side. A chain on this op's other side (a
+  // priority chain selected under an enclosing condition, `c ? chain : x`) is
+  // this op's to rebalance, if both are muxes of the input: a tree this
+  // pattern built is never rebalanced from within (its two-condition nodes
+  // would be rebuilt as themselves, without end), only taken into a chain
+  // from above as before.
   if (op->hasOneUse())
     if (auto userMux = dyn_cast<MuxOp>(*op->user_begin()))
-      return failure();
+      if (built->contains(op) || built->contains(userMux) ||
+          continuesChainOf(userMux, op))
+        return failure();
 
   // Early return if both or neither side are mux chains.
   auto trueMux = op.getTrueValue().getDefiningOp<MuxOp>();
@@ -111,7 +134,9 @@ PriorityMuxReshape::matchAndRewrite(MuxOp op, PatternRewriter &rewriter) const {
   bool useFalseSideChain = falseMux;
 
   auto [conditions, results, locs] = collectChain(op, useFalseSideChain);
-  if (conditions.size() < muxChainThreshold)
+  // A chain of two conditions is as deep as any tree of them: rebuilt, it is
+  // itself again (on the true side, with its conditions inverted), without end.
+  if (conditions.size() < std::max(muxChainThreshold, 3u))
     return failure();
 
   if (!useFalseSideChain) {
@@ -136,6 +161,19 @@ PriorityMuxReshape::matchAndRewrite(MuxOp op, PatternRewriter &rewriter) const {
       rewriter, conditions, resultsRef.drop_back(), resultsRef.back(), locs);
   replaceOpAndCopyNamehint(rewriter, op, balancedTree);
   return success();
+}
+
+bool PriorityMuxReshape::continuesChainOf(MuxOp user, MuxOp op) {
+  auto trueMux = user.getTrueValue().getDefiningOp<MuxOp>();
+  auto falseMux = user.getFalseValue().getDefiningOp<MuxOp>();
+  // The user forms no chain (both sides muxes), or `op` is its condition.
+  if ((trueMux && falseMux) || (trueMux != op && falseMux != op))
+    return false;
+  // collectChain walks the user's chain side, from `op` on to `op`'s value on
+  // the same side if that is a mux of one use.
+  Value next = falseMux ? op.getFalseValue() : op.getTrueValue();
+  auto nextMux = next.getDefiningOp<MuxOp>();
+  return nextMux && nextMux->hasOneUse();
 }
 
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Location>>
@@ -208,8 +246,8 @@ Value PriorityMuxReshape::buildBalancedPriorityMux(
   if (size == 0)
     return defaultValue;
   if (size == 1)
-    return rewriter.createOrFold<MuxOp>(locs.front(), conditions.front(),
-                                        results.front(), defaultValue);
+    return record(rewriter.createOrFold<MuxOp>(
+        locs.front(), conditions.front(), results.front(), defaultValue));
 
   // Recursive case: split range in half. Take the ceiling to ensure the first
   // half is larger.
@@ -234,7 +272,8 @@ Value PriorityMuxReshape::buildBalancedPriorityMux(
       rewriter.createOrFold<OrOp>(loc, conditions.take_front(mid), true);
 
   // Create mux that selects between left and right subtrees
-  return MuxOp::create(rewriter, loc, combinedCond, leftTree, rightTree);
+  return record(
+      MuxOp::create(rewriter, loc, combinedCond, leftTree, rightTree));
 }
 
 // or(mux(c_0, a_0, 0), mux(c_1, a_1, 0), ..., mux(c_n, a_n, 0)) ->
@@ -305,8 +344,9 @@ struct BalanceMuxPass : public impl::BalanceMuxBase<BalanceMuxPass> {
     MLIRContext *context = op->getContext();
 
     RewritePatternSet patterns(context);
-    patterns.add<MuxChainWithComparison, PriorityMuxReshape>(context,
-                                                             muxChainThreshold);
+    DenseSet<Operation *> built;
+    patterns.add<MuxChainWithComparison>(context, muxChainThreshold);
+    patterns.add<PriorityMuxReshape>(context, muxChainThreshold, &built);
     patterns.add<OrOfMuxToMuxChain>(context);
 
     if (failed(applyPatternsGreedily(op, std::move(patterns))))
