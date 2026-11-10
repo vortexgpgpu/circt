@@ -203,14 +203,14 @@ hw.module @KeepAttributes(in %clk : !seq.clock, in %a : i8, in %b : i8, out prod
   hw.output %3, %4 : i8, i8
 }
 
-// A signal that a register drives, and that an `initial` block drives once
-// with a constant, holds the register, preset to the constant.
+// An integer register's starting value is Deseq's to preset (it sees the same
+// constant drive); Sig2Reg leaves both drives alone.
 // CHECK-LABEL: hw.module @InitialConstant
 hw.module @InitialConstant(in %clk : !seq.clock, in %d : i8, out q : i8) {
   %c5_i8 = hw.constant 5 : i8
-  // CHECK-NOT: llhd.
-  // CHECK: [[Q:%.+]] = seq.firreg %d clock %clk preset 5 : i8
-  // CHECK: hw.output [[Q]]
+  // CHECK: llhd.sig
+  // CHECK: llhd.assign %q, %c5_i8
+  // CHECK: seq.firreg %d clock %clk : i8
   %q = llhd.sig : <i8>
   llhd.assign %q, %c5_i8 : i8
   %0 = seq.firreg %d clock %clk : i8

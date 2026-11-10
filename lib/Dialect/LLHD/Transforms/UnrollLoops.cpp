@@ -188,30 +188,6 @@ static std::optional<bool> evaluatePredicate(comb::ICmpPredicate predicate,
   }
 }
 
-/// Match a value that is a constant or folds to one through a tree of foldable
-/// ops on constants. Unrolling an outer loop leaves inner loop bounds such as
-/// `j = i + 1` as `comb.add %c0, %c1`, which only fold once canonicalized.
-static bool matchFoldedConstant(Value value, IntegerAttr &attr,
-                                unsigned depth = 0) {
-  if (matchPattern(value, m_Constant(&attr)))
-    return true;
-  auto *op = value.getDefiningOp();
-  if (!op || depth > 8 || op->getNumResults() != 1 || op->getNumRegions() != 0)
-    return false;
-  SmallVector<Attribute> operands;
-  for (auto operand : op->getOperands()) {
-    IntegerAttr operandAttr;
-    if (!matchFoldedConstant(operand, operandAttr, depth + 1))
-      return false;
-    operands.push_back(operandAttr);
-  }
-  SmallVector<OpFoldResult> results;
-  if (failed(op->fold(operands, results)) || results.size() != 1)
-    return false;
-  attr = dyn_cast_or_null<IntegerAttr>(dyn_cast<Attribute>(results[0]));
-  return bool(attr);
-}
-
 /// Check that the loop matches the specific pattern we understand, and extract
 /// the loop condition and induction variable.
 ///
@@ -369,7 +345,7 @@ bool Loop::matchExit(BlockOperand *edge) {
   // exit condition.
   if (auto icmpOp = exitCondition.getDefiningOp<comb::ICmpOp>()) {
     IntegerAttr boundAttr;
-    if (!matchFoldedConstant(icmpOp.getRhs(), boundAttr))
+    if (!matchPattern(icmpOp.getRhs(), m_Constant(&boundAttr)))
       return failMatch("non-constant loop bound");
     indVar = icmpOp.getLhs();
     predicate = icmpOp.getPredicate();
@@ -410,7 +386,7 @@ bool Loop::matchExit(BlockOperand *edge) {
     IntegerAttr boundAttr;
     if (pred.getOwner()->getBlock() == latch) {
       indVarNext = indVarValue;
-    } else if (matchFoldedConstant(indVarValue, boundAttr)) {
+    } else if (matchPattern(indVarValue, m_Constant(&boundAttr))) {
       if (!beginBoundAttr)
         beginBoundAttr = boundAttr;
       else if (boundAttr != beginBoundAttr)

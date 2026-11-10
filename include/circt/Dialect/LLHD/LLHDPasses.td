@@ -74,13 +74,12 @@ def Sig2RegPass : Pass<"llhd-sig2reg", "hw::HWModuleOp"> {
     combining multiple partial drives into single whole-signal drives. Probes
     through static projections (array elements, struct fields, bit slices) of
     a signal with a single immediate whole-value drive are rebuilt from the
-    driven value. Signals with several immediate partial writes that
-    CombineDrives left alone are still promoted by combining the writes into
-    the signal's initial value.
+    driven value.
 
-    A signal that a register drives, and that is also driven once with the
-    value it starts out with, as an `initial` block assigns it, holds the
-    register: the starting value becomes the register's preset, or, loaded
+    A signal that a register of an aggregate type drives, and that is also
+    driven once with the value it starts out with, as an `initial` block
+    assigns it, holds the register: the starting value becomes the register's
+    preset (Deseq presets integer registers from such drives), or, loaded
     from a file by `$readmemh`/`$readmemb`, the file the register array is
     loaded from, and the signal is promoted to the register's value. The SV
     attributes of a promoted signal move to the register that holds its value,
@@ -95,8 +94,6 @@ def Sig2RegPass : Pass<"llhd-sig2reg", "hw::HWModuleOp"> {
       "Number of removed signals because they were unprobed">,
     Statistic<"numSkipped", "unpromotable",
       "Number of signals that could not be promoted">,
-    Statistic<"numIntervalPromoted", "interval-promoted",
-      "Number of signals promoted by combining partial writes">,
   ];
 }
 
