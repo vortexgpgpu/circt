@@ -914,6 +914,7 @@ struct Promoter {
   LogicalResult promote();
 
   void hoistFieldProjections();
+  void mergeEqualProjections(Value value, Block *block);
   void findPromotableSlots();
   Value resolveSlot(Value projectionOrSlot);
   void populateSlotOps();
@@ -1424,6 +1425,58 @@ void Promoter::hoistFieldProjections() {
           def && dup.use_empty() && region.isAncestor(def->getParentRegion()))
         pruner.eraseLaterIfUnused(dup);
     }
+    // Each path was hoisted on its own, so two of them share their common
+    // prefix only as equal but separate projection ops (two `x[0]` for `x[0][0]`
+    // and `x[0][1]`). The promotion tree reads separate ops of one range as
+    // overlapping accesses and would promote all of the root: merge equal
+    // projections outside any region, root outward (the module body is a graph
+    // region, so the kept op serves every use).
+    mergeEqualProjections(root, regionOp->getBlock());
+  }
+}
+
+/// Merge the projections of `value` placed directly in `block` that select the
+/// same part (same op, same constant index, field or bit range, same type),
+/// recursively down the projection tree.
+void Promoter::mergeEqualProjections(Value value, Block *block) {
+  auto key = [](Operation *op) -> std::optional<std::string> {
+    std::string k = op->getName().getStringRef().str() + ":";
+    llvm::raw_string_ostream os(k);
+    op->getResult(0).getType().print(os);
+    IntegerAttr index;
+    if (auto get = dyn_cast<SigArrayGetOp>(op)) {
+      if (!matchPattern(get.getIndex(), m_Constant(&index)))
+        return std::nullopt;
+      os << ":" << index.getValue();
+    } else if (auto ext = dyn_cast<SigExtractOp>(op)) {
+      if (!matchPattern(ext.getLowBit(), m_Constant(&index)))
+        return std::nullopt;
+      os << ":" << index.getValue();
+    } else if (auto field = dyn_cast<SigStructExtractOp>(op)) {
+      os << ":" << field.getField();
+    } else {
+      return std::nullopt;
+    }
+    return k;
+  };
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    auto cur = worklist.pop_back_val();
+    std::map<std::string, Operation *> kept;
+    for (auto *user : llvm::make_early_inc_range(cur.getUsers())) {
+      if (user->getBlock() != block)
+        continue;
+      auto k = key(user);
+      if (!k)
+        continue;
+      auto [it, inserted] = kept.insert({*k, user});
+      if (inserted)
+        continue;
+      user->getResult(0).replaceAllUsesWith(it->second->getResult(0));
+      pruner.eraseLaterIfUnused(user);
+    }
+    for (auto &[k, op] : kept)
+      worklist.push_back(op->getResult(0));
   }
 }
 

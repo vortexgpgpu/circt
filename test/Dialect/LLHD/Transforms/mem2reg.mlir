@@ -2014,3 +2014,48 @@ hw.module @MixedDelaysOnDisjointSlots(in %v: i8, in %w: i8) {
     llhd.halt
   }
 }
+
+// Two field paths of one root hoisted apart (`x[0][1]` driven, `x[0][0]` read
+// through a whole-signal probe narrowed to the field) share their prefix
+// `x[0]` as one projection: separate equal ops would read as overlapping and
+// promote all of `x` (each `always` block of a per-element register array then
+// drove the whole array).
+// CHECK-LABEL: @ElementsOfNested
+// CHECK: %arr = llhd.sig
+// CHECK-DAG: [[E1:%.+]] = llhd.sig.array_get [[ROW:%.+]][%c1_i2]
+// CHECK-DAG: [[ROW]] = llhd.sig.array_get %arr[%false]
+// CHECK-DAG: [[E0:%.+]] = llhd.sig.array_get [[ROW]][
+// CHECK-NOT: llhd.sig.array_get %arr
+// CHECK: llhd.process
+// CHECK-NOT: llhd.prb %arr
+// CHECK: llhd.drv [[E1]],
+// CHECK: llhd.prb [[E0]] : i32
+hw.module @ElementsOfNested(in %clk : i1, in %set : i1, in %din : i32) {
+  %c0_i32 = hw.constant 0 : i32
+  %false = hw.constant false
+  %c0_i2 = hw.constant 0 : i2
+  %c1_i2 = hw.constant 1 : i2
+  %0 = llhd.constant_time <0ns, 1d>
+  %init = hw.aggregate_constant [[0 : i32, 0 : i32, 0 : i32, 0 : i32], [0 : i32, 0 : i32, 0 : i32, 0 : i32]] : !hw.array<2xarray<4xi32>>
+  %arr = llhd.sig %init : <!hw.array<2xarray<4xi32>>>
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    llhd.wait (%clk : i1), ^bb2
+  ^bb2:
+    cf.cond_br %set, ^bb3, ^bb4
+  ^bb3:
+    %13 = llhd.sig.array_get %arr[%false] : <!hw.array<2xarray<4xi32>>>
+    %14 = llhd.sig.array_get %13[%c1_i2] : <!hw.array<4xi32>>
+    llhd.drv %14, %din after %0 : i32
+    cf.br ^bb1
+  ^bb4:
+    %18 = llhd.sig.array_get %arr[%false] : <!hw.array<2xarray<4xi32>>>
+    %19 = llhd.sig.array_get %18[%c1_i2] : <!hw.array<4xi32>>
+    %20 = llhd.prb %arr : !hw.array<2xarray<4xi32>>
+    %21 = hw.array_get %20[%false] : !hw.array<2xarray<4xi32>>, i1
+    %22 = hw.array_get %21[%c0_i2] : !hw.array<4xi32>, i2
+    llhd.drv %19, %22 after %0 : i32
+    cf.br ^bb1
+  }
+}
