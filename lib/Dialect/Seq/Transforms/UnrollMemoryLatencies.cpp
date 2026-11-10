@@ -31,6 +31,16 @@ struct UnrollMemoryLatenciesPass
   void runOnOperation() override;
 
 private:
+  /// `value` delayed by `delay` cycles: a shift register, or the value itself
+  /// for no delay (a `seq.shiftreg` needs at least one element).
+  static Value delayed(OpBuilder &builder, Location loc, IntegerAttr delay,
+                       Value value, Value clk, Value ce) {
+    if (delay.getInt() <= 0)
+      return value;
+    return seq::ShiftRegOp::create(builder, loc, delay, value, clk, ce, {}, {},
+                                   {}, {}, {});
+  }
+
   /// Delays all of the addresses in the given value range using the given delay
   /// and stores the delayed addresses in the given vector.
   void delayAddresses(OpBuilder &builder, Location loc, Value clk, Value ce,
@@ -43,8 +53,7 @@ private:
     // addresses individually.
     for (auto &addr : addrs)
       // delay the addr
-      addr.set(seq::ShiftRegOp::create(builder, loc, delayAttr, addr.get(), clk,
-                                       ce, {}, {}, {}, {}, {}));
+      addr.set(delayed(builder, loc, delayAttr, addr.get(), clk, ce));
   }
 
   /// Unrolling for the HLMem write ports. This reduces the latency attribute
@@ -75,12 +84,10 @@ private:
     delayAddresses(builder, op.getLoc(), clk, ce, addrs, delayAttr);
 
     // delay the data
-    data.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayAttr,
-                                     data.get(), clk, ce, {}, {}, {}, {}, {}));
+    data.set(delayed(builder, op.getLoc(), delayAttr, data.get(), clk, ce));
 
     // delay the write enable
-    wrEn.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayAttr,
-                                     wrEn.get(), clk, ce, {}, {}, {}, {}, {}));
+    wrEn.set(delayed(builder, op.getLoc(), delayAttr, wrEn.get(), clk, ce));
 
     // Update the latency
     op.setLatencyAttr(oneAttr);
@@ -110,9 +117,7 @@ private:
 
     // delay the read enable
     for (auto &rden : rdEn)
-      rden.set(seq::ShiftRegOp::create(builder, op.getLoc(), latencyAttr,
-                                       rden.get(), clk, ce, {}, {}, {}, {},
-                                       {}));
+      rden.set(delayed(builder, op.getLoc(), latencyAttr, rden.get(), clk, ce));
 
     op.setLatencyAttr(zeroAttr);
   }
@@ -134,15 +139,16 @@ private:
     Value clk = op.getClk();
 
     // Delay the address, data, and enable inputs
-    data.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayAttr,
-                                     data.get(), clk, ce, {}, {}, {}, {}, {}));
+    data.set(delayed(builder, op.getLoc(), delayAttr, data.get(), clk, ce));
 
-    addr.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayAttr,
-                                     addr.get(), clk, ce, {}, {}, {}, {}, {}));
+    addr.set(delayed(builder, op.getLoc(), delayAttr, addr.get(), clk, ce));
 
     for (auto &en : ens)
-      en.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayAttr, en.get(),
-                                     clk, ce, {}, {}, {}, {}, {}));
+      en.set(delayed(builder, op.getLoc(), delayAttr, en.get(), clk, ce));
+
+    // The mask belongs to the same write as the data.
+    for (auto &mask : op.getMaskMutable())
+      mask.set(delayed(builder, op.getLoc(), delayAttr, mask.get(), clk, ce));
   }
 
   /// Performs the latency unrolling of an individual read port
@@ -153,79 +159,26 @@ private:
     MutableOperandRange ens = op.getEnableMutable();
     Value clk = op.getClk();
 
-    addr.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayRdAttr,
-                                     addr.get(), clk, ce, {}, {}, {}, {}, {}));
+    addr.set(delayed(builder, op.getLoc(), delayRdAttr, addr.get(), clk, ce));
 
     for (auto &en : ens)
-      en.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayRdAttr,
-                                     en.get(), clk, ce, {}, {}, {}, {}, {}));
+      en.set(delayed(builder, op.getLoc(), delayRdAttr, en.get(), clk, ce));
   }
 
-  /// Performs the latency unrolling of a read-write port.
-  /// These are annoying as they require implementing both the read and write
-  /// unrolling and then muxing the two delays using the mode as a selector.
-  void unrollFirMemReadWritePort(seq::FirMemReadWriteOp &op,
-                                 IntegerAttr delayWrAttr,
-                                 IntegerAttr delayRdAttr, Value ce,
-                                 OpBuilder &builder) const {
-    // Retrieve all of the relevant arguments
-    OpOperand &addr = op.getAddressMutable();
-    OpOperand &data = op.getWriteDataMutable();
-    OpOperand &mode = op.getModeMutable();
-    MutableOperandRange ens = op.getEnableMutable();
-    Value clk = op.getClk();
-
-    // Create two versions of the delayed address, one using the write
-    // latency, one using the read latency
-    auto delayedReadAddr =
-        seq::ShiftRegOp::create(builder, op.getLoc(), delayRdAttr, addr.get(),
-                                clk, ce, {}, {}, {}, {}, {});
-
-    auto delayedWriteAddr =
-        seq::ShiftRegOp::create(builder, op.getLoc(), delayWrAttr, addr.get(),
-                                clk, ce, {}, {}, {}, {}, {});
-
-    // Delay the write data, this will only be used in case of write so no
-    // need for a second mux.
-    data.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayWrAttr,
-                                     data.get(), clk, ce, {}, {}, {}, {}, {}));
-
-    // Delay mode to match read and write inputs
-    // Select the delay sucht that mode = mux(
-    //  mode.dealy(min(rd_lat, wr_lat)),
-    //  mode.delay(wr_lat), mode.delay(rd_lat)
-    // )
-    // This makes sure that we always select the correct address using the
-    // relevant mode
-
-    auto delayedModeWr =
-        seq::ShiftRegOp::create(builder, op.getLoc(), delayWrAttr, mode.get(),
-                                clk, ce, {}, {}, {}, {}, {});
-
-    auto delayedModeRd =
-        seq::ShiftRegOp::create(builder, op.getLoc(), delayRdAttr, mode.get(),
-                                clk, ce, {}, {}, {}, {}, {});
-
-    // We reuse the smallest delayed mode to avoid creating a duplicate
-    // shiftreg
-    auto selectMode = comb::MuxOp::create(
-        builder, op.getLoc(),
-        delayWrAttr.getInt() < delayRdAttr.getInt() ? delayedModeWr
-                                                    : delayedModeRd,
-        delayedModeWr, delayedModeRd);
-    mode.set(selectMode);
-
-    // Select which delayed version we want based on the mode
-    addr.set(comb::MuxOp::create(builder, op.getLoc(), selectMode,
-                                 delayedWriteAddr, delayedReadAddr));
-
-    // Finally also delay the enable signal
-    for (auto &en : ens)
-      en.set(seq::ShiftRegOp::create(builder, op.getLoc(), delayWrAttr,
-                                     en.get(), clk, ce, {}, {}, {}, {}, {}));
-  }
-
-  void firMemOpUnrolling(seq::FirMemOp &mem, OpBuilder &builder) const {
+  /// Fails on what a delayed address cannot model: a read-write port (its
+  /// read and its write would need different delays of one address and mode)
+  /// and a read-under-write "old" policy with read latency > 0 (a read at
+  /// latency 0 sees the memory after a write committed in the cycle its
+  /// address was issued, i.e. "new").
+  LogicalResult firMemOpUnrolling(seq::FirMemOp &mem,
+                                  OpBuilder &builder) const {
+    if (mem.getReadLatency() > 0 && mem.getRuw() == seq::RUW::Old)
+      return mem.emitOpError("cannot unroll the read latency of a memory "
+                             "with read-under-write 'old'");
+    for (auto *user : mem->getUsers())
+      if (isa<seq::FirMemReadWriteOp>(user))
+        return user->emitOpError("cannot unroll the latencies of a "
+                                 "read-write port");
 
     // Retrieve read and write latencies
     IntegerAttr wrLatency = mem.getWriteLatencyAttr();
@@ -251,16 +204,13 @@ private:
           .Case<seq::FirMemReadOp>([&](auto port) {
             unrollFirMemReadPort(port, delayRdAttr, ce, builder);
           })
-          .Case<seq::FirMemReadWriteOp>([&](auto port) {
-            unrollFirMemReadWritePort(port, delayWrAttr, delayRdAttr, ce,
-                                      builder);
-          })
           .Default([](auto) { /*ignore non-port users*/ });
     }
 
     // Update the memory's latency attributes
     mem.setReadLatencyAttr(zeroAttr);
     mem.setWriteLatencyAttr(oneAttr);
+    return success();
   }
 };
 
@@ -278,7 +228,10 @@ void UnrollMemoryLatenciesPass::runOnOperation() {
         .Case<seq::ReadPortOp>(
             [&](auto &rdop) { hlMemOpReadPortUnrolling(rdop, builder); })
         .Case<seq::FirMemOp>(
-            [&](auto &firmem) { firMemOpUnrolling(firmem, builder); })
+            [&](auto &firmem) {
+              if (failed(firMemOpUnrolling(firmem, builder)))
+                signalPassFailure();
+            })
         .Default([](auto) {});
   });
 }

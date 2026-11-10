@@ -75,35 +75,25 @@ hw.module @firmem(in %clk: !seq.clock, in %rst: i1, in %en: i1, in %addr: i4, in
   seq.firmem.write_port %mem[%addr] = %wdata, clock %clk enable %en : <12 x 42>
 }
 
-// CHECK-LABEL: hw.module @firmemRdWr
+// Read latency 0 and write latency 1 need no delay (a seq.shiftreg needs at
+// least one element), so running the pass twice changes nothing.
+// CHECK-LABEL: hw.module @firmemLatency01
+// CHECK-NOT: seq.shiftreg
+// CHECK: seq.firmem.read_port %mem[%addr], clock %clk enable %en
+// CHECK: seq.firmem.write_port %mem[%addr] = %wdata, clock %clk enable %en
+hw.module @firmemLatency01(in %clk: !seq.clock, in %en: i1, in %addr: i4, in %wdata: i42) {
+  %mem = seq.firmem 0, 1, undefined, port_order : <12 x 42>
+  %0 = seq.firmem.read_port %mem[%addr], clock %clk enable %en : <12 x 42>
+  seq.firmem.write_port %mem[%addr] = %wdata, clock %clk enable %en : <12 x 42>
+}
 
-// CHECK: %mem0 = seq.firmem 0, 1, undefined, port_order : <12 x 42>
-// CHECK: %true = hw.constant true
-// CHECK: [[S0:%.+]] = seq.shiftreg[42] %addr, %clk, %true : i4  
-// CHECK: [[S1:%.+]] = seq.shiftreg[68] %addr, %clk, %true : i4  
-// CHECK: [[S2:%.+]] = seq.shiftreg[68] %wdata, %clk, %true : i42  
-// CHECK: [[SMW0:%.+]] = seq.shiftreg[68] %wmode, %clk, %true : i1  
-// CHECK: [[SMR0:%.+]] = seq.shiftreg[42] %wmode, %clk, %true : i1  
-// CHECK: [[SM0:%.+]] = comb.mux [[SMR0]], [[SMW0]], [[SMR0]] : i1
-// CHECK: [[SS0:%.+]] = comb.mux [[SM0]], [[S1]], [[S0]] : i4
-// CHECK: [[SEN0:%.+]] = seq.shiftreg[68] %en, %clk, %true : i1  
-// CHECK: [[RDWR0:%.+]] = seq.firmem.read_write_port %mem0[[[SS0]]] = [[S2]] if [[SM0]], clock %clk enable [[SEN0]] : <12 x 42>
-
-// CHECK: %mem1 = seq.firmem 0, 1, undefined, port_order : <12 x 42>
-// CHECK: %true_0 = hw.constant true
-// CHECK: [[S3:%.+]] = seq.shiftreg[69] %addr, %clk, %true_0 : i4  
-// CHECK: [[S4:%.+]] = seq.shiftreg[41] %addr, %clk, %true_0 : i4  
-// CHECK: [[S5:%.+]] = seq.shiftreg[41] %wdata, %clk, %true_0 : i42  
-// CHECK: [[SMW1:%.+]] = seq.shiftreg[41] %wmode, %clk, %true_0 : i1  
-// CHECK: [[SMR1:%.+]] = seq.shiftreg[69] %wmode, %clk, %true_0 : i1  
-// CHECK: [[SM1:%.+]] = comb.mux [[SMW1]], [[SMW1]], [[SMR1]] : i1
-// CHECK: [[SS1:%.+]] = comb.mux [[SM1]], [[S4]], [[S3]] : i4
-// CHECK: [[SEN1:%.+]] = seq.shiftreg[41] %en, %clk, %true_0 : i1  
-// CHECK: [[RDWR1:%.+]] = seq.firmem.read_write_port %mem1[[[SS1]]] = [[S5]] if [[SM1]], clock %clk enable [[SEN1]] : <12 x 42>
-hw.module @firmemRdWr(in %clk: !seq.clock, in %rst: i1, in %en: i1, in %addr: i4, in %wdata: i42, in %wmode: i1) {
-  %mem0 = seq.firmem 42, 69, undefined, port_order : <12 x 42>
-  %2 = seq.firmem.read_write_port %mem0[%addr] = %wdata if %wmode, clock %clk enable %en : <12 x 42>
-
-  %mem1 = seq.firmem 69, 42, undefined, port_order : <12 x 42>
-  %3 = seq.firmem.read_write_port %mem1[%addr] = %wdata if %wmode, clock %clk enable %en : <12 x 42>
+// The write mask is delayed with the write's address, data and enable.
+// CHECK-LABEL: hw.module @firmemMask
+// CHECK-DAG: [[A:%.+]] = seq.shiftreg[2] %addr
+// CHECK-DAG: [[D:%.+]] = seq.shiftreg[2] %wdata
+// CHECK-DAG: [[M:%.+]] = seq.shiftreg[2] %mask
+// CHECK: seq.firmem.write_port %mem[[[A]]] = [[D]], clock %clk mask [[M]]
+hw.module @firmemMask(in %clk: !seq.clock, in %addr: i4, in %wdata: i42, in %mask: i3) {
+  %mem = seq.firmem 0, 3, undefined, port_order : <12 x 42, mask 3>
+  seq.firmem.write_port %mem[%addr] = %wdata, clock %clk mask %mask : <12 x 42, mask 3>, i3
 }
