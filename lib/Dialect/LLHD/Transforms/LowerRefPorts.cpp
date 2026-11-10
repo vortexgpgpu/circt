@@ -52,9 +52,9 @@ struct LowerRefPortsPass
 /// How a reference port is used inside its module.
 struct PortUse {
   SmallVector<ProbeOp> probes;
-  SmallVector<DriveOp> drives;
+  SmallVector<DriveLikeOp> drives;
   /// Drives of constant projections of the port, one drive per projection.
-  SmallVector<std::pair<Operation *, DriveOp>> sliceDrives;
+  SmallVector<std::pair<Operation *, DriveLikeOp>> sliceDrives;
   bool other = false;
 };
 
@@ -62,17 +62,17 @@ struct PortUse {
 /// whole port (`projection` is null) or one constant slice of it.
 struct WriteEntry {
   unsigned input;
-  DriveOp drive;
+  DriveLikeOp drive;
   Operation *projection = nullptr;
   StringAttr name;
 };
 } // namespace
 
-/// A drive the pass can move to the instantiation site: its delay is constant
-/// and it has no enable.
-static bool isPlainDrive(DriveOp drive, unsigned operandNumber) {
+/// A drive the pass can move to the instantiation site: a blocking assignment
+/// or a drive of constant delay, without an enable.
+static bool isPlainDrive(DriveLikeOp drive, unsigned operandNumber) {
   return operandNumber == 0 && !drive.getEnable() &&
-         drive.getTime().getDefiningOp<ConstantTimeOp>();
+         (!drive.getTime() || drive.getTime().getDefiningOp<ConstantTimeOp>());
 }
 
 /// The constant index operand of a projection, if it has one.
@@ -86,7 +86,7 @@ static Value getProjectionIndex(Operation *op) {
 
 /// A projection of the port selecting a constant slice, that is driven exactly
 /// once and used in no other way.
-static DriveOp getSliceDrive(Operation *op) {
+static DriveLikeOp getSliceDrive(Operation *op) {
   if (!isa<SigExtractOp, SigArrayGetOp, SigStructExtractOp>(op))
     return {};
   if (auto index = getProjectionIndex(op))
@@ -95,7 +95,7 @@ static DriveOp getSliceDrive(Operation *op) {
   if (!op->getResult(0).hasOneUse())
     return {};
   auto &use = *op->getResult(0).getUses().begin();
-  auto drive = dyn_cast<DriveOp>(use.getOwner());
+  auto drive = dyn_cast<DriveLikeOp>(use.getOwner());
   if (!drive || !isPlainDrive(drive, use.getOperandNumber()) ||
       drive->getBlock() != op->getBlock())
     return {};
@@ -115,7 +115,7 @@ static StringAttr getSliceName(StringAttr port, Operation *op) {
 
 /// Whether the slices driven through `sliceDrives` are pairwise disjoint.
 static bool
-slicesAreDisjoint(ArrayRef<std::pair<Operation *, DriveOp>> slices) {
+slicesAreDisjoint(ArrayRef<std::pair<Operation *, DriveLikeOp>> slices) {
   SmallVector<std::pair<uint64_t, uint64_t>> bits; // [low, high)
   llvm::SmallDenseSet<std::pair<StringAttr, int64_t>> elements;
   for (auto [op, drive] : slices) {
@@ -160,7 +160,7 @@ static PortUse classify(BlockArgument arg) {
       use.other = true;
       continue;
     }
-    if (auto drive = dyn_cast<DriveOp>(user);
+    if (auto drive = dyn_cast<DriveLikeOp>(user);
         drive && isPlainDrive(drive, operand.getOperandNumber())) {
       use.drives.push_back(drive);
       continue;
@@ -282,7 +282,8 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
     module.setAllPortAttrs(attrs);
   }
 
-  // Driven ports and slices: the driven values become new outputs.
+  // Driven ports and slices: the driven values become new outputs. A null
+  // delay stands for a blocking assignment.
   SmallVector<TimeAttr> writeDelays;
   SmallVector<unsigned> eraseInputs;
   if (!writes.empty()) {
@@ -296,10 +297,12 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
       info.dir = hw::ModulePort::Direction::Output;
       insertOutputs.push_back({numOutputs, info});
       newOutputs.push_back(write.drive.getValue());
-      auto timeOp = write.drive.getTime().getDefiningOp<ConstantTimeOp>();
-      writeDelays.push_back(timeOp.getValueAttr());
+      ConstantTimeOp timeOp;
+      if (auto time = write.drive.getTime())
+        timeOp = time.getDefiningOp<ConstantTimeOp>();
+      writeDelays.push_back(timeOp ? timeOp.getValueAttr() : TimeAttr());
       write.drive.erase();
-      if (timeOp->use_empty())
+      if (timeOp && timeOp->use_empty())
         timeOp->erase();
       if (write.projection) {
         auto index = getProjectionIndex(write.projection);
@@ -348,6 +351,11 @@ void LowerRefPortsPass::processModule(hw::HWModuleOp module,
       inst.getResult(r).replaceAllUsesWith(newInst.getResult(r));
     builder.setInsertionPointAfter(newInst);
     for (unsigned k = 0; k < writes.size(); ++k) {
+      if (!writeDelays[k]) {
+        AssignOp::create(builder, inst.getLoc(), targets[k],
+                         newInst.getResult(oldResults + k), Value());
+        continue;
+      }
       auto time =
           ConstantTimeOp::create(builder, inst.getLoc(), writeDelays[k]);
       DriveOp::create(builder, inst.getLoc(), targets[k],

@@ -1,4 +1,4 @@
-//===- Sig2RegPass.cpp - Implement the Sig2Reg Pass -----------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implement Pass to promote LLHD signals to SSA values.
+// Promote LLHD signals to SSA values.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,21 +17,21 @@
 #include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Sim/SimOps.h"
-#include "llvm/Support/Debug.h"
-
 #include "mlir/IR/Matchers.h"
+#include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "llhd-sig2reg"
 
 namespace circt {
 namespace llhd {
-#define GEN_PASS_DEF_SIG2REG
+#define GEN_PASS_DEF_SIG2REGPASS
 #include "circt/Dialect/LLHD/LLHDPasses.h.inc"
 } // namespace llhd
 } // namespace circt
 
 using namespace mlir;
 using namespace circt;
+using namespace llhd;
 
 /// Keep the SV attributes of a promoted signal, e.g. `(* ram_style *)` or
 /// `(* use_dsp *)`, which would otherwise disappear with it: a register that
@@ -52,6 +52,18 @@ static Value keepAttributes(llhd::SignalOp sigOp, Value value,
       hw::WireOp::create(builder, sigOp.getLoc(), value, sigOp.getNameAttr());
   sv::setSVAttributes(wire, svAttrs);
   return wire;
+}
+
+/// Whether a drive takes effect immediately: a blocking `llhd.assign`, or an
+/// `llhd.drv` without any delay.
+static bool isImmediate(llhd::DriveLikeOp drive) {
+  if (!drive.getTime())
+    return true;
+  auto timeOp = drive.getTime().getDefiningOp<llhd::ConstantTimeOp>();
+  if (!timeOp)
+    return false;
+  auto time = timeOp.getValue();
+  return time.getTime() == 0 && time.getDelta() == 0;
 }
 
 namespace {
@@ -89,7 +101,8 @@ struct Interval {
   uint64_t bitwidth;
   // The value written to this interval or the OpResult of a read.
   Value value;
-  // The delay with which the value is written.
+  // The delay with which the value is written. Null if the value is assigned
+  // immediately.
   llhd::TimeAttr delay;
 };
 
@@ -146,6 +159,20 @@ public:
 
                 intervals.emplace_back(offset, bw, driveOp.getValue(),
                                        timeOp.getValueAttr());
+                return success();
+              })
+              .Case<llhd::AssignOp>([&](llhd::AssignOp assignOp) {
+                if (assignOp.getEnable()) {
+                  LLVM_DEBUG(llvm::dbgs()
+                             << "  - Conditional assignment, skipping...\n\n");
+                  return failure();
+                }
+
+                auto bw = hw::getBitWidth(assignOp.getValue().getType());
+                if (bw <= 0)
+                  return failure();
+
+                intervals.emplace_back(offset, bw, assignOp.getValue());
                 return success();
               })
               .Case<llhd::SigExtractOp>([&](llhd::SigExtractOp extractOp) {
@@ -214,7 +241,8 @@ public:
         os << llvm::indent(indent + 3) << idx << "\n";
 
       os << llvm::indent(indent + 3) << "value: " << interval.value << "\n";
-      os << llvm::indent(indent + 3) << "delay: " << interval.delay << "\n";
+      if (interval.delay)
+        os << llvm::indent(indent + 3) << "delay: " << interval.delay << "\n";
       os << llvm::indent(indent + 2) << ">,\n";
     }
     os << llvm::indent(indent) << "]\n";
@@ -225,12 +253,19 @@ public:
   /// Check if we can promote the entire signal according to the current
   /// limitations of the pass.
   bool isPromotable() {
+    // A delayed write leaves the initial value visible until it takes effect,
+    // which the promoted value cannot express; see Sig2RegPass::promote.
+    if (llvm::any_of(intervals, [](auto &interval) { return interval.delay; }))
+      return false;
+    // The signal captures a non-constant initial value only once, so it does
+    // not equal that value at all times; see Sig2RegPass::promote.
+    if (sigOp.getInit() && !matchPattern(sigOp.getInit(), m_Constant()))
+      return false;
     if (!sigOp.getInit()) {
       auto bw = hw::getBitWidth(sigOp.getType().getNestedType());
       return intervals.size() == 1 && intervals.front().low.isStatic() &&
              intervals.front().low.min == 0 &&
-             intervals.front().bitwidth == bw &&
-             isImmediate(intervals.front().delay);
+             intervals.front().bitwidth == bw && !intervals.front().delay;
     }
     for (unsigned i = 0; i < intervals.size(); ++i) {
       if (i >= intervals.size() - 1)
@@ -296,7 +331,7 @@ public:
         }
 
         assignVal = builder.createOrFold<comb::ShlOp>(loc, assignVal, amt);
-        if (!isImmediate(interval.delay))
+        if (interval.delay)
           assignVal = builder.createOrFold<llhd::DelayOp>(loc, assignVal,
                                                           interval.delay);
         val = builder.createOrFold<comb::OrOp>(loc, assignVal, val);
@@ -359,11 +394,6 @@ private:
     return index;
   }
 
-  bool isImmediate(llhd::TimeAttr attr) const {
-    return attr.getTime() == 0 && attr.getDelta() == 0 &&
-           attr.getEpsilon() == 1;
-  }
-
   // The signal to be promoted.
   llhd::SignalOp sigOp;
   // Intervals written to.
@@ -373,6 +403,7 @@ private:
   // Operations to delete after promotion is done.
   SmallVector<Operation *> toDelete;
 };
+} // namespace
 
 /// Promote a signal that has exactly one unconditional, immediate drive of its
 /// whole value, and is otherwise only probed, either directly or through
@@ -380,7 +411,7 @@ private:
 /// rebuilt from the driven value with the matching aggregate ops, keeping the
 /// value's structure instead of flattening the signal into one bit vector.
 static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
-  llhd::DriveOp drive;
+  llhd::DriveLikeOp drive;
   SmallVector<std::pair<Operation *, SmallVector<Operation *>>> probes;
   SmallVector<Operation *> projections;
   SmallVector<std::pair<Value, SmallVector<Operation *>>> worklist;
@@ -391,15 +422,9 @@ static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
       auto *user = use.getOwner();
       if (user->getBlock() != sigOp->getBlock())
         return failure();
-      if (auto driveOp = dyn_cast<llhd::DriveOp>(user)) {
+      if (auto driveOp = dyn_cast<llhd::DriveLikeOp>(user)) {
         if (use.getOperandNumber() != 0 || !path.empty() || drive ||
-            driveOp.getEnable())
-          return failure();
-        auto timeOp = driveOp.getTime().getDefiningOp<llhd::ConstantTimeOp>();
-        if (!timeOp)
-          return failure();
-        auto t = timeOp.getValue();
-        if (t.getTime() != 0 || t.getDelta() != 0 || t.getEpsilon() > 1)
+            driveOp.getEnable() || !isImmediate(driveOp))
           return failure();
         drive = driveOp;
         continue;
@@ -432,10 +457,16 @@ static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
   // Rebuild every probed value from the driven value.
   OpBuilder sigBuilder(drive);
   Value driven = keepAttributes(sigOp, drive.getValue(), sigBuilder);
+  // The value of each projection, built once for all the probes through it.
+  DenseMap<Operation *, Value> projected;
   for (auto &[probe, path] : probes) {
     OpBuilder builder(probe);
     Value value = driven;
     for (auto *proj : path) {
+      if (auto known = projected.lookup(proj)) {
+        value = known;
+        continue;
+      }
       auto loc = proj->getLoc();
       if (auto op = dyn_cast<llhd::SigArrayGetOp>(proj)) {
         value = builder.createOrFold<hw::ArrayGetOp>(loc, value, op.getIndex());
@@ -452,6 +483,7 @@ static LogicalResult promoteSingleWholeDrive(llhd::SignalOp sigOp) {
             loc, builder.getIntegerType(width), value,
             low.getValue().getZExtValue());
       }
+      projected[proj] = value;
     }
     probe->getResult(0).replaceAllUsesWith(value);
     probe->erase();
@@ -516,13 +548,13 @@ static sim::SVReadMemOp getInitialFileLoad(Value value, llhd::SignalOp sigOp) {
 /// Without the second drive, the register holds the signal on its own.
 static LogicalResult foldInitialDrive(llhd::SignalOp sigOp) {
   // Two drives of the whole signal, and no drive of a part of it.
-  SmallVector<llhd::DriveOp, 2> drives;
+  SmallVector<llhd::DriveLikeOp, 2> drives;
   SmallVector<Value> worklist{sigOp.getResult()};
   while (!worklist.empty()) {
     auto value = worklist.pop_back_val();
     for (auto &use : value.getUses()) {
       auto *user = use.getOwner();
-      if (auto drive = dyn_cast<llhd::DriveOp>(user)) {
+      if (auto drive = dyn_cast<llhd::DriveLikeOp>(user)) {
         if (value != sigOp.getResult() || use.getOperandNumber() != 0 ||
             drive.getEnable() || drive->getBlock() != sigOp->getBlock())
           return failure();
@@ -538,14 +570,6 @@ static LogicalResult foldInitialDrive(llhd::SignalOp sigOp) {
     return failure();
 
   // Both drives take effect immediately, at the start for the initial one.
-  auto isImmediate = [](llhd::DriveOp drive) {
-    auto timeOp = drive.getTime().getDefiningOp<llhd::ConstantTimeOp>();
-    if (!timeOp)
-      return false;
-    auto time = timeOp.getValue();
-    return time.getTime() == 0 && time.getDelta() == 0 &&
-           time.getEpsilon() <= 1;
-  };
   auto regDrive = drives[0], initDrive = drives[1];
   if (!regDrive.getValue().getDefiningOp<seq::FirRegOp>())
     std::swap(regDrive, initDrive);
@@ -585,57 +609,174 @@ static LogicalResult foldInitialDrive(llhd::SignalOp sigOp) {
   if (process->use_empty() &&
       llvm::all_of(process.getBody().front(), [](Operation &op) {
         return isa<sim::SVReadMemOp, llhd::HaltOp>(op) || isPure(&op);
-      }))
+      })) {
     process.erase();
+    if (filename->use_empty())
+      filename.erase();
+  }
   return success();
 }
 
-struct Sig2RegPass : public circt::llhd::impl::Sig2RegBase<Sig2RegPass> {
+
+namespace {
+struct Sig2RegPass : public llhd::impl::Sig2RegPassBase<Sig2RegPass> {
   void runOnOperation() override;
+  bool promote(SignalOp op);
+  SmallVector<SignalOp> signalsToErase;
 };
 } // namespace
 
 void Sig2RegPass::runOnOperation() {
-  hw::HWModuleOp moduleOp = getOperation();
+  LLVM_DEBUG(llvm::dbgs() << "Promoting signals to values in "
+                          << getOperation().getModuleName() << "\n");
+  for (auto op : llvm::make_early_inc_range(getOperation().getOps<SignalOp>())) {
+    // A register array or preset an `initial` block fills is folded into the
+    // register first; then a signal with a single whole-value drive, whose
+    // probes may go through static projections, is rebuilt from the driven
+    // value; anything else goes to the plain promoter, and what that skips to
+    // the interval promoter, which combines immediate partial writes.
+    (void)foldInitialDrive(op);
+    if (succeeded(promoteSingleWholeDrive(op))) {
+      ++numPromoted;
+      continue;
+    }
+    if (promote(op))
+      continue;
+    SigPromoter promoter(op);
+    if (succeeded(promoter.computeIntervals()) && promoter.isPromotable()) {
+      promoter.promote();
+      --numSkipped;
+      ++numIntervalPromoted;
+    }
+  }
+  for (auto op : signalsToErase)
+    op.erase();
+  signalsToErase.clear();
+}
 
-  LLVM_DEBUG(llvm::dbgs() << "=== Sig2Reg in module " << moduleOp.getSymName()
-                          << "\n\n");
-
-  for (auto sigOp :
-       llvm::make_early_inc_range(moduleOp.getOps<llhd::SignalOp>())) {
-    // If the signal is only driven, but never read or used otherwise, remove
-    // it.
-    if (llvm::all_of(sigOp->getUses(), [](auto &use) {
-          return isa<llhd::DriveOp>(use.getOwner()) &&
-                 use.getOperandNumber() == 0;
-        })) {
-      LLVM_DEBUG(llvm::dbgs() << "  - Removing drive-only signal "
-                              << sigOp.getName() << "\n");
-      for (auto *user : llvm::make_early_inc_range(sigOp->getUsers()))
-        user->erase();
-      sigOp.erase();
+bool Sig2RegPass::promote(SignalOp op) {
+  // Find the single drive, and check if there are any probes or multiple drives
+  // of this signal. Bail on unknown users.
+  DriveLikeOp drive;
+  bool multipleDrives = false;
+  bool anyProbe = false;
+  for (auto *user : op->getUsers()) {
+    if (isa<ProbeOp>(user)) {
+      anyProbe = true;
       continue;
     }
 
-    LLVM_DEBUG(llvm::dbgs() << "  - Attempting to promote signal "
-                            << sigOp.getName() << "\n");
-    (void)foldInitialDrive(sigOp);
-    if (succeeded(promoteSingleWholeDrive(sigOp))) {
-      LLVM_DEBUG(llvm::dbgs() << "  - Promoted single whole-value drive\n\n");
+    if (auto driveOp = dyn_cast<DriveLikeOp>(user)) {
+      if (driveOp->getBlock() != op->getBlock()) {
+        LLVM_DEBUG(llvm::dbgs() << "- Skipping " << op
+                                << " (driven from different block)\n");
+        ++numSkipped;
+        return false;
+      }
+      if (drive)
+        multipleDrives = true;
+      drive = driveOp;
       continue;
     }
-    SigPromoter promoter(sigOp);
-    if (failed(promoter.computeIntervals()) || !promoter.isPromotable())
-      continue;
 
-    promoter.promote();
-    LLVM_DEBUG(llvm::dbgs() << "  - Successfully promoted!\n\n");
+    // Unknown user.
+    LLVM_DEBUG(llvm::dbgs() << "- Skipping " << op << " (unsupported user "
+                            << user->getName() << ")\n");
+    ++numSkipped;
+    return false;
   }
 
-  LLVM_DEBUG({
-    if (moduleOp.getOps<llhd::SignalOp>().empty())
-      llvm::dbgs() << "  Successfully promoted all signals in module!\n";
-  });
+  // Remove unprobed signals.
+  if (!anyProbe) {
+    LLVM_DEBUG(llvm::dbgs() << "- Removing unprobed " << op << "\n");
+    ++numUnused;
+    SmallPtrSet<Operation *, 8> erased;
+    for (auto *user : llvm::make_early_inc_range(op->getUsers()))
+      if (erased.insert(user).second)
+        user->erase();
+    signalsToErase.push_back(op);
+    return true;
+  }
 
-  LLVM_DEBUG(llvm::dbgs() << "\n");
+  // If there are multiple drives, we cannot come up with a clean replacement
+  // value.
+  if (multipleDrives) {
+    LLVM_DEBUG(llvm::dbgs() << "- Skipping " << op << " (multiple drives)\n");
+    ++numSkipped;
+    return false;
+  }
+
+  // We can't promote conditional drives.
+  if (drive && drive.getEnable()) {
+    LLVM_DEBUG(llvm::dbgs() << "- Skipping " << op << " (conditional drive)\n");
+    ++numSkipped;
+    return false;
+  }
+
+  // Determine the value to replace the signal with.
+  Value value;
+  if (drive) {
+    value = drive.getValue();
+    if (drive.getTime()) {
+      if (op.getInit()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "- Skipping " << op
+                   << " (delayed drive to signal with initializer)\n");
+        ++numSkipped;
+        return false;
+      }
+      TimeAttr delay;
+      if (!matchPattern(drive.getTime(), m_Constant(&delay))) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "- Skipping " << op << " (non-constant drive delay)\n");
+        ++numSkipped;
+        return false;
+      }
+      OpBuilder builder(drive);
+      value = DelayOp::create(builder, drive.getLoc(), value, delay);
+    }
+  } else {
+    value = op.getInit();
+    if (!value) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "- Skipping " << op << " (undriven with no initializer)\n");
+      ++numSkipped;
+      return false;
+    }
+
+    // The signal captures its initial value once. Only a constant initializer
+    // is guaranteed to equal the signal's value at all times.
+    if (!matchPattern(value, m_Constant())) {
+      LLVM_DEBUG(llvm::dbgs() << "- Skipping " << op
+                              << " (undriven with non-constant initializer)\n");
+      ++numSkipped;
+      return false;
+    }
+  }
+
+  // Replace all probes with this value, and remove all users, which are only
+  // probes and drives at this point.
+  LLVM_DEBUG({
+    llvm::dbgs() << "- Replacing " << op << " with ";
+    value.printAsOperand(llvm::dbgs(), OpPrintingFlags());
+    llvm::dbgs() << "\n";
+  });
+  {
+    OpBuilder builder(op);
+    if (auto *defOp = value.getDefiningOp();
+        defOp && defOp->getBlock() == op->getBlock() &&
+        op->isBeforeInBlock(defOp))
+      builder.setInsertionPointAfter(defOp);
+    value = keepAttributes(op, value, builder);
+  }
+  SmallPtrSet<Operation *, 8> erased;
+  for (auto *user : llvm::make_early_inc_range(op->getUsers())) {
+    if (auto probeOp = dyn_cast<ProbeOp>(user))
+      probeOp.replaceAllUsesWith(value);
+    if (erased.insert(user).second)
+      user->erase();
+  }
+  signalsToErase.push_back(op);
+  ++numPromoted;
+  return true;
 }

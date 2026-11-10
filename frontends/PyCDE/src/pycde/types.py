@@ -153,6 +153,10 @@ def _FromCirctType(type: typing.Union[ir.Type, Type]) -> Type:
     return Type.__new__(TypeAlias, type, incl_cls_in_key=False)
   if isinstance(type, hw.InOutType):
     return Type.__new__(InOut, type)
+  if isinstance(type, sv.NetType):
+    return Type.__new__(Net, type)
+  if isinstance(type, sv.VarType):
+    return Type.__new__(Var, type)
   if isinstance(type, ir.IntegerType):
     if type.is_signed:
       return Type.__new__(SInt, type)
@@ -175,10 +179,14 @@ def _FromCirctType(type: typing.Union[ir.Type, Type]) -> Type:
   return Type(type)
 
 
-class InOut(Type):
+class SVHandle(Type):
+  """Base class for SystemVerilog handle types."""
+
+  _circt_type = None
+  _name = None
 
   def __new__(cls, element_type: Type):
-    return super(InOut, cls).__new__(cls, hw.InOutType.get(element_type._type))
+    return super().__new__(cls, cls._circt_type.get(element_type._type))
 
   @property
   def element_type(self) -> Type:
@@ -188,12 +196,39 @@ class InOut(Type):
   def is_hw_type(self) -> bool:
     return True
 
+  def __repr__(self):
+    return f"{self._name}<{self.element_type!r}>"
+
+
+class InOut(SVHandle):
+  _circt_type = hw.InOutType
+  _name = "InOut"
+
   def _get_value_class(self):
     from .signals import InOutSignal
     return InOutSignal
 
-  def __repr__(self):
-    return f"InOut<{repr(self.element_type)}"
+
+class Net(SVHandle):
+  """An SV net handle type (`!sv.net<T>`)."""
+
+  _circt_type = sv.NetType
+  _name = "Net"
+
+  def _get_value_class(self):
+    from .signals import NetSignal
+    return NetSignal
+
+
+class Var(SVHandle):
+  """An SV variable handle type (`!sv.var<T>`)."""
+
+  _circt_type = sv.VarType
+  _name = "Var"
+
+  def _get_value_class(self):
+    from .signals import VarSignal
+    return VarSignal
 
 
 class TypeAlias(Type):
@@ -791,7 +826,7 @@ class Channel(Type):
         raise TypeError(
             f"Expected signal of type {self.inner_type}, got {value.type}")
       valid = Bits(1)(valid_or_empty)
-      wrap_op = esi.WrapValidOnlyOp(value.value, valid.value)
+      wrap_op = esi.WrapValidOnlyOp(self._type, value.value, valid.value)
       # ValidOnly has no backpressure — return a constant true ready signal.
       # wrap_op is a single-result op that PyCDE auto-coerces to ChannelSignal.
       return wrap_op, Bits(1)(1)

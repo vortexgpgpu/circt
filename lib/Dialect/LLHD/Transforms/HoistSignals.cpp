@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ProjectionUtils.h"
 #include "circt/Dialect/LLHD/LLHDOps.h"
 #include "circt/Dialect/LLHD/LLHDPasses.h"
 #include "mlir/Analysis/Liveness.h"
@@ -240,7 +241,8 @@ private:
   explicit DriveValue(Data data) : data(data) {}
 };
 
-/// The operands of an `llhd.drv`, represented as `DriveValue`s.
+/// The operands of an `llhd.drv` or `llhd.assign`, represented as
+/// `DriveValue`s. The delay is null for `llhd.assign` ops.
 struct DriveOperands {
   DriveValue value;
   DriveValue delay;
@@ -251,6 +253,9 @@ struct DriveOperands {
 /// of the drive before each terminator, and which operands have a uniform
 /// value.
 struct DriveSet {
+  /// Whether the drive operations are immediate `llhd.assign` ops, as opposed
+  /// to delayed `llhd.drv` ops. All drives in a set are of the same kind.
+  bool isAssign = false;
   /// The drive operations covered by the information in this struct.
   SmallPtrSet<Operation *, 2> ops;
   /// The drive operands at each terminator.
@@ -281,6 +286,8 @@ namespace {
 /// combinational process whose `llhd.yield` takes the role of the suspending
 /// `llhd.wait` and `llhd.halt` terminators.
 struct DriveHoister {
+  using RangedValue = std::pair<Value, std::optional<ProjectionRange>>;
+
   DriveHoister(Operation *processOp) : processOp(processOp) {}
   void hoist();
 
@@ -310,91 +317,28 @@ void DriveHoister::hoist() {
   hoistDrives();
 }
 
-/// If `value` is a chain of constant-index `llhd.sig.array_get` and
-/// `llhd.sig.struct_extract` ops rooted at an `llhd.sig`, return the root and
-/// the field path.
-static bool getFieldPath(Value value, Value &root,
-                         SmallVectorImpl<std::string> &path) {
-  SmallVector<std::string> reversed;
-  while (true) {
-    if (value.getDefiningOp<SignalOp>()) {
-      root = value;
-      path.assign(reversed.rbegin(), reversed.rend());
-      return true;
-    }
-    if (auto op = value.getDefiningOp<SigArrayGetOp>()) {
-      IntegerAttr index;
-      if (!matchPattern(op.getIndex(), m_Constant(&index)))
-        return false;
-      reversed.push_back("[" + std::to_string(index.getValue().getZExtValue()) +
-                         "]");
-      value = op.getInput();
-      continue;
-    }
-    if (auto op = value.getDefiningOp<SigStructExtractOp>()) {
-      // Union members overlap each other; only struct fields are disjoint.
-      if (!hw::type_isa<hw::StructType>(
-              op.getInput().getType().getNestedType()))
-        return false;
-      reversed.push_back("." + op.getField().str());
-      value = op.getInput();
-      continue;
-    }
-    if (auto op = value.getDefiningOp<SigExtractOp>()) {
-      IntegerAttr low;
-      if (!matchPattern(op.getLowBit(), m_Constant(&low)))
-        return false;
-      auto width = hw::getBitWidth(op.getResult().getType().getNestedType());
-      reversed.push_back("{" + std::to_string(low.getValue().getZExtValue()) +
-                         ":" + std::to_string(width) + "}");
-      value = op.getInput();
-      continue;
-    }
-    return false;
-  }
-}
-
-/// Whether two field paths of the same root may refer to overlapping bits.
-/// Paths overlap if one is a prefix of the other, or if they diverge at bit
-/// slices with intersecting ranges.
-static bool fieldPathsOverlap(ArrayRef<std::string> a,
-                              ArrayRef<std::string> b) {
-  for (unsigned i = 0, e = std::min(a.size(), b.size()); i < e; ++i) {
-    if (a[i] == b[i])
-      continue;
-    if (a[i][0] == '{' && b[i][0] == '{') {
-      unsigned alo, aw, blo, bw;
-      sscanf(a[i].c_str(), "{%u:%u}", &alo, &aw);
-      sscanf(b[i].c_str(), "{%u:%u}", &blo, &bw);
-      return alo < blo + bw && blo < alo + aw;
-    }
-    return false;
-  }
-  return true;
-}
-
 /// Identify any slots driven under the current region which are candidates for
 /// hoisting. This checks if the slots escape or alias in any way which we
 /// cannot reason about.
 void DriveHoister::findHoistableSlots() {
   SmallPtrSet<Value, 8> seenSlots;
-  processOp->walk([&](DriveOp op) {
+  SmallDenseMap<Operation *, SmallVector<RangedValue>, 8> slotsByRoot;
+
+  processOp->walk([&](DriveLikeOp op) {
     auto slot = op.getSignal();
     if (!seenSlots.insert(slot).second)
       return;
 
-    // We can only hoist drives to slots declared by a `llhd.sig` op outside the
-    // current region, to constant field projections of such a signal (created
-    // by Mem2Reg for processes that only assign one element of an aggregate),
-    // provided the process accesses no overlapping part of it, or to a
-    // reference port of the module.
+    // The slot, and the entire projection chain leading to it, has to be
+    // defined outside the current region.
     if (!slot.getParentRegion()->isProperAncestor(&getBody()))
       return;
+
     if (isModuleRefPort(slot)) {
-      // Another reference port may be bound to the same signal, unless one of
-      // the two is marked `llhd.noalias`; a signal declared in the module, or a
-      // projection of one, cannot be. Any op given another reference, such as
-      // a call, may access it.
+      // A reference port of the module. Another reference port may be bound to
+      // the same signal, unless one of the two is marked `llhd.noalias`; a
+      // signal declared in the module, or a projection of one, cannot be. Any
+      // op given another reference, such as a call, may access it.
       bool slotNoAlias = isNoAliasPort(slot);
       bool mayAlias = false;
       processOp->walk([&](Operation *user) {
@@ -410,44 +354,58 @@ void DriveHoister::findHoistableSlots() {
       });
       if (mayAlias)
         return;
-    } else if (!slot.getDefiningOp<llhd::SignalOp>()) {
-      Value root;
-      SmallVector<std::string> path;
-      if (!getFieldPath(slot, root, path))
+
+      // Ensure the port is not used in any way we cannot reason about.
+      if (!llvm::all_of(slot.getUsers(), [&](auto *user) {
+            // Ignore uses outside of the region.
+            if (!getBody().isAncestor(user->getParentRegion()))
+              return true;
+            return isa<ProbeOp, DriveLikeOp>(user);
+          }))
         return;
+    } else {
+      // Otherwise we can only hoist drives to slots that are either declared
+      // by a `llhd.sig` op or a projection of it.
+      auto [rootOp, range] = getRootSignalAndRange(slot);
+      if (!rootOp)
+        return;
+      if (!rootOp->getParentRegion()->isProperAncestor(&getBody()))
+        return;
+
+      // We can only hoist drives that are not driving overlapping parts
+      // of the same signal.
+      auto &rootSlots = slotsByRoot[rootOp];
       bool overlaps = false;
-      processOp->walk([&](Operation *user) {
-        if (!isa<ProbeOp, DriveOp>(user) || user->getOperand(0) == slot)
-          return;
-        Value otherRoot;
-        SmallVector<std::string> otherPath;
-        if (!getFieldPath(user->getOperand(0), otherRoot, otherPath)) {
-          // A reference port of the module refers to storage outside of it,
-          // so it cannot alias a signal declared in the module.
-          if (auto arg = dyn_cast<BlockArgument>(user->getOperand(0)))
-            if (isa<hw::HWModuleOp>(arg.getOwner()->getParentOp()))
-              return;
-          // Any other unknown reference may alias.
-          overlaps |= !user->getOperand(0).getDefiningOp<SignalOp>() ||
-                      user->getOperand(0) == root;
-          return;
+      for (auto &[otherSlot, otherRange] : rootSlots) {
+        if (!range || !otherRange || !isProvablyDisjoint(*range, *otherRange)) {
+          slots.remove(otherSlot);
+          overlaps = true;
         }
-        if (otherRoot != root)
-          return;
-        overlaps |= fieldPathsOverlap(path, otherPath);
-      });
+      }
+      rootSlots.push_back({slot, range});
       if (overlaps)
         return;
-    }
 
-    // Ensure the slot is not used in any way we cannot reason about.
-    if (!llvm::all_of(slot.getUsers(), [&](auto *user) {
-          // Ignore uses outside of the region.
+      // Ensure the root signal is not (transitively) used in any way we cannot
+      // reason about.
+      SmallVector<Value> worklist{rootOp->getResult(0)};
+      SmallPtrSet<Value, 8> seenProjections;
+      while (!worklist.empty()) {
+        for (auto *user : worklist.pop_back_val().getUsers()) {
+          if (isProjection(user)) {
+            if (seenProjections.insert(user->getResult(0)).second)
+              worklist.push_back(user->getResult(0));
+            continue;
+          }
+          // Ignore other uses outside of the region.
           if (!getBody().isAncestor(user->getParentRegion()))
-            return true;
-          return isa<ProbeOp, DriveOp>(user);
-        }))
-      return;
+            continue;
+          // Bail out on unwanted uses.
+          if (!isa<ProbeOp, DriveLikeOp>(user))
+            return;
+        }
+      }
+    }
 
     // Skip slots with types for which we cannot materialize a default
     // constant (needed when yielding values across wait boundaries).
@@ -470,7 +428,7 @@ void DriveHoister::findHoistableSlots() {
 /// Also populates `suspendOps` with all `llhd.wait` and `llhd.halt` ops.
 void DriveHoister::collectDriveSets() {
   SmallPtrSet<Value, 8> unhoistableSlots;
-  SmallDenseMap<Value, DriveOp, 8> laterDrives;
+  SmallDenseMap<Value, DriveLikeOp, 8> laterDrives;
 
   auto trueAttr = BoolAttr::get(processOp->getContext(), true);
   for (auto &block : getBody()) {
@@ -485,7 +443,7 @@ void DriveHoister::collectDriveSets() {
 
     for (auto &op : llvm::make_early_inc_range(
              llvm::reverse(block.without_terminator()))) {
-      auto driveOp = dyn_cast<DriveOp>(op);
+      auto driveOp = dyn_cast<DriveLikeOp>(op);
 
       // We can only hoist drives that have no side-effecting ops between
       // themselves and the terminator of the block. If we see a side-effecting
@@ -496,9 +454,11 @@ void DriveHoister::collectDriveSets() {
         continue;
       }
 
+      bool isAssign = isa<AssignOp>(op);
+
       // Check if we can hoist drives to this signal.
-      if (!slots.contains(driveOp.getSignal()) ||
-          unhoistableSlots.contains(driveOp.getSignal())) {
+      auto slot = driveOp.getSignal();
+      if (!slots.contains(slot) || unhoistableSlots.contains(slot)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "- Skipping (slot unhoistable): " << driveOp << "\n");
         continue;
@@ -510,12 +470,12 @@ void DriveHoister::collectDriveSets() {
         LLVM_DEBUG(llvm::dbgs()
                    << "- Aborting slot (drive across side-effect): " << driveOp
                    << "\n");
-        unhoistableSlots.insert(driveOp.getSignal());
+        unhoistableSlots.insert(slot);
         continue;
       }
 
       // Handle the case where we've seen a later drive to this slot.
-      auto &laterDrive = laterDrives[driveOp.getSignal()];
+      auto &laterDrive = laterDrives[slot];
       if (laterDrive) {
         // If there is a later drive with the same delay and enable condition,
         // we can simply ignore this drive.
@@ -531,20 +491,32 @@ void DriveHoister::collectDriveSets() {
         // drive.
         LLVM_DEBUG(llvm::dbgs()
                    << "- Aborting slot (multiple drives): " << driveOp << "\n");
-        unhoistableSlots.insert(driveOp.getSignal());
+        unhoistableSlots.insert(slot);
         continue;
       }
       laterDrive = driveOp;
 
+      // Drives and assigns to the same slot cannot be merged into a single
+      // hoisted op.
+      auto &driveSet = driveSets[slot];
+      if (!driveSet.ops.empty() && driveSet.isAssign != isAssign) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "- Aborting slot (mixed drives and assigns): " << driveOp
+                   << "\n");
+        unhoistableSlots.insert(slot);
+        continue;
+      }
+      driveSet.isAssign = isAssign;
+
       // Add the operands of this drive to the drive set for the driven slot.
       auto operands = DriveOperands{
           driveOp.getValue(),
-          driveOp.getTime(),
+          isAssign ? DriveValue::dontCare(TimeType::get(processOp->getContext()))
+                   : DriveValue(driveOp.getTime()),
           driveOp.getEnable() ? DriveValue(driveOp.getEnable())
                               : DriveValue(trueAttr),
       };
-      auto &driveSet = driveSets[driveOp.getSignal()];
-      driveSet.ops.insert(driveOp);
+      driveSet.ops.insert(&op);
       driveSet.operands.insert({terminator, operands});
     }
   }
@@ -673,7 +645,7 @@ void DriveHoister::hoistDrives() {
         .Case<Type>([&](auto type) -> Value {
           // TODO: This should probably create something like a `llhd.dontcare`.
           if (isa<TimeType>(type)) {
-            auto attr = TimeAttr::get(builder.getContext(), 0, "ns", 0, 0);
+            auto attr = TimeAttr::get(builder.getContext(), 0, "ns", 0);
             auto &slot = materializedConstants[attr];
             if (!slot)
               slot = ConstantTimeOp::create(builder, processOp->getLoc(), attr);
@@ -717,7 +689,8 @@ void DriveHoister::hoistDrives() {
       auto &driveSet = driveSets[slot];
       auto operands = driveSet.operands.lookup(suspendOp);
       addYieldOperand(driveSet.uniform.value, operands.value);
-      addYieldOperand(driveSet.uniform.delay, operands.delay);
+      if (!driveSet.isAssign)
+        addYieldOperand(driveSet.uniform.delay, operands.delay);
       addYieldOperand(driveSet.uniform.enable, operands.enable);
     }
   }
@@ -733,7 +706,8 @@ void DriveHoister::hoistDrives() {
     auto &driveSet = driveSets[slot];
     auto operands = driveSet.operands.begin()->second;
     addResultType(driveSet.uniform.value, operands.value);
-    addResultType(driveSet.uniform.delay, operands.delay);
+    if (!driveSet.isAssign)
+      addResultType(driveSet.uniform.delay, operands.delay);
     addResultType(driveSet.uniform.enable, operands.enable);
   }
   Operation *newProcessOp;
@@ -777,17 +751,22 @@ void DriveHoister::hoistDrives() {
 
     // Create the new drive outside of the process.
     auto value = useResultValue(driveSet.uniform.value);
-    auto delay = useResultValue(driveSet.uniform.delay);
+    auto delay =
+        driveSet.isAssign ? Value{} : useResultValue(driveSet.uniform.delay);
     auto enable = driveSet.uniform.enable != DriveValue(trueAttr)
                       ? useResultValue(driveSet.uniform.enable)
                       : Value{};
-    [[maybe_unused]] auto newDrive =
-        DriveOp::create(builder, slot.getLoc(), slot, value, delay, enable);
-    LLVM_DEBUG(llvm::dbgs() << "- Add " << newDrive << "\n");
+    [[maybe_unused]] Operation *newDrive;
+    if (driveSet.isAssign)
+      newDrive = AssignOp::create(builder, slot.getLoc(), slot, value, enable);
+    else
+      newDrive =
+          DriveOp::create(builder, slot.getLoc(), slot, value, delay, enable);
+    LLVM_DEBUG(llvm::dbgs() << "- Add " << *newDrive << "\n");
 
     // Remove the old drives inside of the process.
     for (auto *oldOp : driveSet.ops) {
-      auto oldDrive = cast<DriveOp>(oldOp);
+      auto oldDrive = cast<DriveLikeOp>(oldOp);
       LLVM_DEBUG(llvm::dbgs() << "- Remove " << oldDrive << "\n");
       auto delay = oldDrive.getTime();
       auto enable = oldDrive.getEnable();

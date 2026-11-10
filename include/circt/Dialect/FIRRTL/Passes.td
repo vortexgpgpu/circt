@@ -278,14 +278,11 @@ def Dedup : Pass<"firrtl-dedup", "firrtl::CircuitOp"> {
     handle this, the pass will update any bulk-connections so that the correct
     fields are legally connected. Deduplicated modules will have their
     annotations merged, which tends to create many non-local annotations.
+    Classes are nominally typed and are never deduplicated.
   }];
   let statistics = [
     Statistic<"erasedModules", "num-erased-modules",
       "Number of modules which were erased by deduplication">
-  ];
-  let options = [
-    Option<"dedupClasses", "dedup-classes", "bool", "true",
-      "Deduplicate classes, violating their nominal typing.">
   ];
 }
 
@@ -538,10 +535,6 @@ def MergeConnections : Pass<"firrtl-merge-connections", "firrtl::FModuleOp"> {
     Option<"enableAggressiveMerging", "aggressive-merging", "bool", "false",
       "Merge connections even when source values won't be simplified.">
   ];
-}
-
-def Vectorization : Pass<"firrtl-vectorization", "firrtl::FModuleOp"> {
-  let summary = "Transform firrtl primitive operations into vector operations";
 }
 
 def InferReadWrite : Pass<"firrtl-infer-rw", "firrtl::FModuleOp"> {

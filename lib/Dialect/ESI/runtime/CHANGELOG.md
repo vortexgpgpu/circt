@@ -4,6 +4,29 @@
 
 ### Breaking changes
 
+- **Cosim protocol v4: backpressure.** Cosim channels now apply credit-based
+  flow control in both directions. The cosim wire protocol is bumped to v4
+  and the version is checked exactly in `hello`, so the runtime and the
+  simulator's DPI library must be rebuilt together. See `cosim-protocol.md`.
+  - Host→simulation: `WriteChannelPort::tryWrite()` now returns `false` while
+    16 frames (or `ConnectOptions::bufferSize`; `0` = unbounded) are
+    unconsumed by the simulation, and `write()` blocks until there's room.
+    Frames held for a simulator port which isn't connected count too.
+  - Simulation→host: `Cosim_Endpoint_ToHost` now deasserts `DataInReady` while
+    32 frames (or the read port's `ConnectOptions::bufferSize`; `0` =
+    unbounded) are queued or unconsumed by the host. Software which writes a
+    long burst before reading any results may now deadlock, as it would on
+    hardware. Connect such read ports with `bufferSize = 0`.
+  - The `cosim_ep_tryput` DPI call returns a positive value when the channel
+    is full and the message was not accepted.
+  - For windowed (translated) ports, `WriteChannelPort::tryWrite()` now
+    returns `false`, keeping nothing for a later `flush()`, when the backend
+    doesn't accept the message's first frame. Previously it returned `true`
+    and left the whole message buffered.
+  - `RpcClient::connectClientReceiver()` takes a `maxInFlight` argument;
+    `RpcClient` gains `tryWriteToServer()` and `setToServerMaxInFlight()`, and
+    `RpcServer` gains `messageConsumed()`. `RpcServer` write ports'
+    `tryWrite()` fails, and `write()` blocks, at the in-flight limit.
 - **`HostMemRegion` is now defined at namespace scope** as
   `esi::services::HostMemRegion`. `services::HostMem::HostMemRegion` remains
   as an alias, so existing source compiles unchanged, but code linking against
@@ -19,10 +42,36 @@
 
 ### Added
 
+- **Non-blocking segmented writes.** `WriteChannelPort` gains a virtual
+  `bool tryWrite(std::unique_ptr<SegmentedMessageData> &msg)` and
+  `TypedWritePort<T>` gains `bool tryWrite(std::unique_ptr<T> &data)`. They
+  take ownership of the message (leaving the pointer null) only when they
+  return true; on false the caller keeps the message and can retry. The
+  default implementation flattens the message and calls the existing
+  `tryWrite(const MessageData &)`; backends may override it for
+  scatter-gather support.
+- **Multiple outstanding host memory reads per client.**
+  `HostMemReadReqSplitter` takes a new optional `max_outstanding` parameter
+  (default `1`, which keeps the previous one-request-at-a-time behavior). With
+  a larger value it accepts up to that many logical read requests while
+  earlier ones are still returning data, and frames each request's response
+  burst (`last`, `valid_bytes`) from a small metadata FIFO. Single-chunk
+  requests can be accepted every cycle and response bursts flow back to back
+  with no bubble. The upstream must return each client's response words in
+  request order. `HostmemReadProcessor` and `ChannelHostMem` pass the limit
+  through as `max_outstanding_reads` (default `1`). `CosimBSP` and
+  `CosimBSP_DMA` take the same parameter and default it to `4`, since the
+  cosim host answers reads in order.
+- `HostMem.start()` is now available from Python, so Python code can enable
+  the host memory service (needed before the accelerator reads host memory
+  under cosim).
 - `CosimBSP` accepts a `channel_service` implementation class for custom channel
   transports, including engines shared by multiple channels. The BSP satisfies
   the implementation's MMIO and HostMem requests. This option is mutually
   exclusive with the existing `dma_engine_pair` shorthand.
+- `ChannelEngineService` connects an engine's `hostmem_read_list` port to
+  HostMem as a burst (`read_list`) read, as it already does for `hostmem_read`
+  and `hostmem_write`. Engines can now read many host memory words per request.
 - **Zero-copy DMA from HostMem regions through segmented messages.** A
   `Segment` can point (non-owningly) at the `HostMemRegion` holding its bytes
   via the new `region` field, and `Segment::getDeviceAddress()` returns the
@@ -45,6 +94,12 @@
   which only needs to allocate regions (e.g. message types which keep their
   data in HostMem) can accept a `HostMemAllocator` so callers can supply
   other allocators, such as pools.
+
+### Fixed
+
+- **Cosim no longer drops frames sent before the simulator connects.** Frames
+  sent to a simulator port which isn't connected yet are held by the server
+  and handed over, in order, once it connects.
 
 ## 0.8.0
 

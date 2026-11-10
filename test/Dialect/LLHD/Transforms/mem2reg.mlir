@@ -7,28 +7,24 @@ hw.module @Trivial(in %u: i42) {
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    %0 = llhd.constant_time <0ns, 0d, 1e>
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NOT: llhd.prb
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
   // CHECK: llhd.combinational -> i42
   llhd.combinational -> i42 {
     // CHECK-NOT: llhd.drv
-    %0 = llhd.constant_time <0ns, 0d, 1e>
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NOT: llhd.prb
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.yield %u
     llhd.yield %1 : i42
   }
@@ -37,12 +33,11 @@ hw.module @Trivial(in %u: i42) {
 // Drive forwarding across reconvergent control flow.
 // CHECK-LABEL: @ReconvergentControlFlow
 hw.module @ReconvergentControlFlow(in %u: i42, in %bool: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NEXT: cf.cond_br
     cf.cond_br %bool, ^bb1, ^bb2
   ^bb1:
@@ -55,8 +50,7 @@ hw.module @ReconvergentControlFlow(in %u: i42, in %bool: i1) {
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -65,12 +59,11 @@ hw.module @ReconvergentControlFlow(in %u: i42, in %bool: i1) {
 // Merging of multiple drives on converging control flow.
 // CHECK-LABEL: @DriveMerging
 hw.module @DriveMerging(in %u: i42, in %v: i42) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NOT: llhd.prb
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
@@ -80,7 +73,7 @@ hw.module @DriveMerging(in %u: i42, in %v: i42) {
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 : i42
+    llhd.assign %a, %v : i42
     // CHECK-NOT: llhd.prb
     %2 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%v)
@@ -93,8 +86,7 @@ hw.module @DriveMerging(in %u: i42, in %v: i42) {
     %3 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42([[TMP]])
     func.call @use_i42(%3) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[TMP]]
+    // CHECK-NEXT: llhd.assign %a, [[TMP]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -103,7 +95,6 @@ hw.module @DriveMerging(in %u: i42, in %v: i42) {
 // Forwarding on a subset of control flow when drive dominates all probes.
 // CHECK-LABEL: @CompleteDefinitionOnSubset
 hw.module @CompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
@@ -113,8 +104,8 @@ hw.module @CompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
     cf.cond_br %bool, ^bb1, ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
-    // CHECK-NOT llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    // CHECK-NOT: llhd.drv
+    llhd.assign %a, %u : i42
     // CHECK-NOT: llhd.prb
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
@@ -123,8 +114,7 @@ hw.module @CompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
     cf.br ^bb2
   ^bb2:
     // CHECK-NEXT: ^bb2([[A:%.+]]: i42, [[ACOND:%.+]]: i1):
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]] after {{%.+}} if [[ACOND]]
+    // CHECK-NEXT: llhd.assign %a, [[A]] if [[ACOND]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -134,7 +124,6 @@ hw.module @CompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
 // CHECK-LABEL: @IncompleteDefinitionOnSubset
 hw.module @IncompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
   // CHECK-NEXT: %true = hw.constant true
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
@@ -144,8 +133,8 @@ hw.module @IncompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
     cf.cond_br %bool, ^bb1, ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
-    // CHECK-NOT llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    // CHECK-NOT: llhd.drv
+    llhd.assign %a, %u : i42
     // CHECK-NEXT: cf.br ^bb2(%u, %true : i42, i1)
     cf.br ^bb2
   ^bb2:
@@ -154,8 +143,7 @@ hw.module @IncompleteDefinitionOnSubset(in %u: i42, in %bool: i1) {
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42([[A]])
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]] after {{%.+}} if [[ACOND]]
+    // CHECK-NEXT: llhd.assign %a, [[A]] if [[ACOND]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -213,21 +201,20 @@ hw.module @DontInsertDriveBlocksForProbes(in %u: i42, in %bool: i1) {
 
 // CHECK-LABEL: @MultipleDrivesConverging
 hw.module @MultipleDrivesConverging(in %u: i42, in %v: i42) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   %b = llhd.sig %v : <i42>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %b, %v after %0 : i42
+    llhd.assign %a, %u : i42
+    llhd.assign %b, %v : i42
     // CHECK-NEXT: cf.br ^bb2(%u, %v : i42, i42)
     cf.br ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 : i42
-    llhd.drv %b, %u after %0 : i42
+    llhd.assign %a, %v : i42
+    llhd.assign %b, %u : i42
     // CHECK-NEXT: cf.br ^bb2(%v, %u : i42, i42)
     cf.br ^bb2
   ^bb2:
@@ -240,9 +227,8 @@ hw.module @MultipleDrivesConverging(in %u: i42, in %v: i42) {
     cf.br ^bb3
   ^bb3:
     // CHECK-NEXT: ^bb3:
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]]
-    // CHECK-NEXT: llhd.drv %b, [[B]]
+    // CHECK-NEXT: llhd.assign %a, [[A]]
+    // CHECK-NEXT: llhd.assign %b, [[B]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -253,7 +239,6 @@ hw.module @MultipleDrivesConverging(in %u: i42, in %v: i42) {
 // See https://github.com/llvm/circt/issues/8245
 // CHECK-LABEL: @ProbeDriveChains
 hw.module @ProbeDriveChains() {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0_i42 = hw.constant 0 : i42
   %x = llhd.sig %c0_i42 : <i42>
   %y = llhd.sig %c0_i42 : <i42>
@@ -264,16 +249,15 @@ hw.module @ProbeDriveChains() {
     // CHECK-NOT: llhd.prb
     // CHECK-NOT: llhd.drv
     %1 = llhd.prb %x : i42
-    llhd.drv %y, %1 after %0 : i42
+    llhd.assign %y, %1 : i42
     %2 = llhd.prb %y : i42
-    llhd.drv %z, %2 after %0 : i42
+    llhd.assign %z, %2 : i42
     %3 = llhd.prb %z : i42
     // CHECK-NEXT: call @use_i42([[TMP]])
     func.call @use_i42(%3) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NOT: llhd.drv %x
-    // CHECK-NEXT: llhd.drv %y, [[TMP]]
-    // CHECK-NEXT: llhd.drv %z, [[TMP]]
+    // CHECK-NOT: llhd.assign %x
+    // CHECK-NEXT: llhd.assign %y, [[TMP]]
+    // CHECK-NEXT: llhd.assign %z, [[TMP]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -286,7 +270,6 @@ hw.module @ProbeDriveChains() {
 // CHECK-LABEL: @TrackDriveCondition
 hw.module @TrackDriveCondition(in %u: i42, in %v: i42) {
   // CHECK: %true = hw.constant true
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0_i42 = hw.constant 0 : i42
   %a = llhd.sig %c0_i42 : <i42>
   %b = llhd.sig %c0_i42 : <i42>
@@ -297,15 +280,15 @@ hw.module @TrackDriveCondition(in %u: i42, in %v: i42) {
     // CHECK-NEXT: %false = hw.constant false
     // CHECK-NEXT: [[B:%.+]] = llhd.prb %b
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NEXT: cf.br ^bb2(%u, [[B]], %false, [[C]] : i42, i42, i1, i42)
     cf.br ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NEXT: [[C:%.+]] = llhd.prb %c
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 : i42
-    llhd.drv %b, %v after %0 : i42
+    llhd.assign %a, %v : i42
+    llhd.assign %b, %v : i42
     // CHECK-NEXT: cf.br ^bb2(%v, %v, %true, [[C]] : i42, i42, i1, i42)
     cf.br ^bb2
   ^bb2:
@@ -320,10 +303,9 @@ hw.module @TrackDriveCondition(in %u: i42, in %v: i42) {
     func.call @use_i42(%1) : (i42) -> ()
     func.call @use_i42(%2) : (i42) -> ()
     func.call @use_i42(%3) : (i42) -> ()
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]] after [[T]]
-    // CHECK-NEXT: llhd.drv %b, [[B]] after [[T]] if [[BCOND]]
-    // CHECK-NOT: llhd.drv %c
+    // CHECK-NEXT: llhd.assign %a, [[A]]
+    // CHECK-NEXT: llhd.assign %b, [[B]] if [[BCOND]]
+    // CHECK-NOT: llhd.assign %c
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -355,7 +337,6 @@ hw.module @DefinitionsThroughLoops() {
 // when the loop exits.
 // CHECK-LABEL: @ReadModifyWriteLoop
 hw.module @ReadModifyWriteLoop(in %u: i42) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0_i42 = hw.constant 0 : i42
   %a = llhd.sig %c0_i42 : <i42>
   // CHECK: llhd.process
@@ -370,15 +351,14 @@ hw.module @ReadModifyWriteLoop(in %u: i42) {
     // CHECK-NEXT: [[ANEW:%.+]] = comb.add [[A]], %u
     %2 = comb.add %1, %u : i42
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %2 after %0 : i42
+    llhd.assign %a, %2 : i42
     // CHECK-NEXT: [[TMP:%.+]] = comb.icmp ult [[A]], %u
     %3 = comb.icmp ult %1, %u : i42
     // CHECK-NEXT: cf.cond_br [[TMP]], ^bb2, ^bb1([[ANEW]] : i42)
     cf.cond_br %3, ^bb2, ^bb1
   ^bb2:
     // CHECK-NEXT: ^bb2:
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[ANEW]]
+    // CHECK-NEXT: llhd.assign %a, [[ANEW]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -399,13 +379,11 @@ hw.module @OnlyConsiderUsesInRegionForPromotability(in %u: i42) {
   llhd.process {
     // CHECK-NOT: llhd.drv
     // CHECK-NOT: llhd.prb
-    %0 = llhd.constant_time <0ns, 0d, 1e>
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     %1 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%u)
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -415,7 +393,6 @@ hw.module @OnlyConsiderUsesInRegionForPromotability(in %u: i42) {
 // of the wait op to allow drives to be forwarded to the probes.
 // CHECK-LABEL: @CaptureAcrossWaits
 hw.module @CaptureAcrossWaits(in %u: i42, in %bool: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0_i42 = hw.constant 0 : i42
   %a = llhd.sig %c0_i42 : <i42>
   %b = llhd.sig %c0_i42 : <i42>
@@ -457,51 +434,47 @@ hw.module @CaptureAcrossWaits(in %u: i42, in %bool: i1) {
 // Conditional drive forwarding.
 // CHECK-LABEL: @ConditionalDrives
 hw.module @ConditionalDrives(in %u: i42, in %v: i42, in %q: i1, in %r: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u after {{%.+}} if %q
-    llhd.drv %a, %u after %0 if %q : i42
+    // CHECK-NEXT: llhd.assign %a, %u if %q
+    llhd.assign %a, %u if %q : i42
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 if %q : i42
+    llhd.assign %a, %u if %q : i42
     // CHECK-NEXT: cf.br ^bb2(%u : i42)
     cf.br ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 if %q : i42
+    llhd.assign %a, %v if %q : i42
     // CHECK-NEXT: cf.br ^bb2(%v : i42)
     cf.br ^bb2
   ^bb2:
     // CHECK-NEXT: ^bb2([[A:%.+]]: i42):
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]] after {{%.+}} if %q
+    // CHECK-NEXT: llhd.assign %a, [[A]] if %q
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 if %q : i42
+    llhd.assign %a, %u if %q : i42
     // CHECK-NEXT: cf.br ^bb2(%u, %q : i42, i1)
     cf.br ^bb2
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 if %r : i42
+    llhd.assign %a, %v if %r : i42
     // CHECK-NEXT: cf.br ^bb2(%v, %r : i42, i1)
     cf.br ^bb2
   ^bb2:
     // CHECK-NEXT: ^bb2([[A:%.+]]: i42, [[ACOND:%.+]]: i1):
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]] after {{%.+}} if [[ACOND]]
+    // CHECK-NEXT: llhd.assign %a, [[A]] if [[ACOND]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -510,20 +483,18 @@ hw.module @ConditionalDrives(in %u: i42, in %v: i42, in %q: i1, in %r: i1) {
 // See https://github.com/llvm/circt/issues/8494.
 // CHECK-LABEL: @MultipleConditionalDrives
 hw.module @MultipleConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: i1, in %r: i1, in %s: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // Conditional drives following non-conditional drives should create
   // multiplexers to modify the value forwarded as a reaching definition.
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NEXT: [[DRV1:%.+]] = comb.mux %q, %v, %u : i42
-    llhd.drv %a, %v after %0 if %q : i42
+    llhd.assign %a, %v if %q : i42
     // CHECK-NEXT: [[DRV2:%.+]] = comb.mux %r, %w, [[DRV1]] : i42
-    llhd.drv %a, %w after %0 if %r : i42
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}} :
+    llhd.assign %a, %w if %r : i42
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]] :
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -533,15 +504,14 @@ hw.module @MultipleConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: 
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 if %q : i42
+    llhd.assign %a, %u if %q : i42
     // CHECK-NEXT: [[DRV1:%.+]] = comb.mux %r, %v, %u : i42
     // CHECK-NEXT: [[ENABLE1:%.+]] = comb.or %r, %q : i1
-    llhd.drv %a, %v after %0 if %r : i42
+    llhd.assign %a, %v if %r : i42
     // CHECK-NEXT: [[DRV2:%.+]] = comb.mux %s, %w, [[DRV1]] : i42
     // CHECK-NEXT: [[ENABLE2:%.+]] = comb.or %s, [[ENABLE1]] : i1
-    llhd.drv %a, %w after %0 if %s : i42
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}} if [[ENABLE2]] :
+    llhd.assign %a, %w if %s : i42
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]] if [[ENABLE2]] :
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -550,18 +520,17 @@ hw.module @MultipleConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: 
   llhd.process {
     // CHECK-NEXT: [[A:%.+]] = llhd.prb %a
     // CHECK-NEXT: [[DRV1:%.+]] = comb.mux %q, %u, [[A]] : i42
-    llhd.drv %a, %u after %0 if %q : i42
+    llhd.assign %a, %u if %q : i42
     // CHECK-NEXT: [[DRV2:%.+]] = comb.mux %r, %v, [[DRV1]] : i42
     // CHECK-NEXT: [[ENABLE2:%.+]] = comb.or %r, %q : i1
-    llhd.drv %a, %v after %0 if %r : i42
+    llhd.assign %a, %v if %r : i42
     // CHECK-NEXT: [[DRV3:%.+]] = comb.mux %s, %w, [[DRV2]] : i42
     // CHECK-NEXT: [[ENABLE3:%.+]] = comb.or %s, [[ENABLE2]] : i1
-    llhd.drv %a, %w after %0 if %s : i42
+    llhd.assign %a, %w if %s : i42
     // CHECK-NEXT: call @use_i42([[DRV3]])
     %1 = llhd.prb %a : i42
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV3]] after {{%.+}} if [[ENABLE3]] :
+    // CHECK-NEXT: llhd.assign %a, [[DRV3]] if [[ENABLE3]] :
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -569,16 +538,15 @@ hw.module @MultipleConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: 
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NEXT: [[DRV1:%.+]] = comb.mux %q, %v, %u : i42
-    llhd.drv %a, %v after %0 if %q : i42
+    llhd.assign %a, %v if %q : i42
     // CHECK-NEXT: [[DRV2:%.+]] = comb.mux %r, %w, [[DRV1]] : i42
-    llhd.drv %a, %w after %0 if %r : i42
+    llhd.assign %a, %w if %r : i42
     // CHECK-NEXT: call @use_i42([[DRV2]])
     %1 = llhd.prb %a : i42
     func.call @use_i42(%1) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}} :
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]] :
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -587,17 +555,15 @@ hw.module @MultipleConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: 
 // Delayed and blocking drive interaction.
 // CHECK-LABEL: @DelayedDrives
 hw.module @DelayedDrives(in %u: i42, in %v: i42, in %bool: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
-  %1 = llhd.constant_time <0ns, 1d, 0e>
+  %1 = llhd.constant_time <0ns, 1d>
   %a = llhd.sig %u : <i42>
   // Delayed drives after blocking drives persist.
   // CHECK: llhd.process
   llhd.process {
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 0d, 1e>
-    // CHECK-NEXT: llhd.drv %a, %u after [[T]]
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 1d, 0e>
+    // CHECK-NEXT: llhd.assign %a, %u
+    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 1d>
     // CHECK-NEXT: llhd.drv %a, %v after [[T]]
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     llhd.drv %a, %v after %1 : i42
     // CHECK-NEXT: llhd.halt
     llhd.halt
@@ -605,11 +571,10 @@ hw.module @DelayedDrives(in %u: i42, in %v: i42, in %bool: i1) {
   // Later blocking drives erase earlier delayed drives.
   // CHECK: llhd.process
   llhd.process {
-    // CHECK-NOT: llhd.drv %a, %u
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 0d, 1e>
-    // CHECK-NEXT: llhd.drv %a, %v after [[T]]
+    // CHECK-NOT: llhd.assign %a, %u
+    // CHECK-NEXT: llhd.assign %a, %v
     llhd.drv %a, %u after %1 : i42
-    llhd.drv %a, %v after %0 : i42
+    llhd.assign %a, %v : i42
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -624,16 +589,15 @@ hw.module @DelayedDrives(in %u: i42, in %v: i42, in %bool: i1) {
   ^bb1:
     // CHECK-NEXT: ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 : i42
+    llhd.assign %a, %v : i42
     // CHECK-NEXT: hw.constant 0 : i42
     // CHECK-NEXT: hw.constant false
     // CHECK-NEXT: cf.br ^bb2(%v, {{%true.*}}, {{%c0_i42.*}}, {{%false.*}} : i42, i1, i42, i1)
     cf.br ^bb2
   ^bb2:
     // CHECK-NEXT: ^bb2([[ABLK:%.+]]: i42, [[ABLKCOND:%.+]]: i1, [[ADEL:%.+]]: i42, [[ADELCOND:%.+]]: i1):
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 0d, 1e>
-    // CHECK-NEXT: llhd.drv %a, [[ABLK]] after [[T]] if [[ABLKCOND]]
-    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 1d, 0e>
+    // CHECK-NEXT: llhd.assign %a, [[ABLK]] if [[ABLKCOND]]
+    // CHECK-NEXT: [[T:%.+]] = llhd.constant_time <0ns, 1d>
     // CHECK-NEXT: llhd.drv %a, [[ADEL]] after [[T]] if [[ADELCOND]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
@@ -642,7 +606,7 @@ hw.module @DelayedDrives(in %u: i42, in %v: i42, in %bool: i1) {
 
 // CHECK-LABEL: @DelayedConditionalDrives
 hw.module @DelayedConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: i1, in %r: i1, in %s: i1) {
-  %0 = llhd.constant_time <0ns, 1d, 0e>
+  %0 = llhd.constant_time <0ns, 1d>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
@@ -652,7 +616,7 @@ hw.module @DelayedConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: i
     llhd.drv %a, %v after %0 if %q : i42
     // CHECK-NEXT: [[DRV2:%.+]] = comb.mux %r, %w, [[DRV1]] : i42
     llhd.drv %a, %w after %0 if %r : i42
-    // CHECK-NEXT: llhd.constant_time <0ns, 1d, 0e>
+    // CHECK-NEXT: llhd.constant_time <0ns, 1d>
     // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}} :
     // CHECK-NEXT: llhd.halt
     llhd.halt
@@ -662,21 +626,19 @@ hw.module @DelayedConditionalDrives(in %u: i42, in %v: i42, in %w: i42, in %q: i
 // Basic probing of signal projection works.
 // CHECK-LABEL: @BasicProjectionProbe
 hw.module @BasicProjectionProbe(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.sig.array_get
     // CHECK-NOT: llhd.drv
     %1 = llhd.sig.array_get %a[%i] : <!hw.array<4xi42>>
-    llhd.drv %a, %u after %0 : !hw.array<4xi42>
+    llhd.assign %a, %u : !hw.array<4xi42>
     // CHECK-NOT: llhd.prb
     // CHECK-NEXT: [[TMP:%.+]] = hw.array_get %u[%i]
     %2 = llhd.prb %1 : i42
     // CHECK-NEXT: call @use_i42([[TMP]])
     func.call @use_i42(%2) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -685,23 +647,21 @@ hw.module @BasicProjectionProbe(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) 
 // Basic driving of signal projection works.
 // CHECK-LABEL: @BasicProjectionDrive
 hw.module @BasicProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : !hw.array<4xi42>
+    llhd.assign %a, %u : !hw.array<4xi42>
     // CHECK-NOT: llhd.sig.array_get
     %1 = llhd.sig.array_get %a[%i] : <!hw.array<4xi42>>
     // CHECK-NOT: llhd.drv
     // CHECK-NEXT: [[A:%.+]] = hw.array_inject %u[%i], %v
-    llhd.drv %1, %v after %0 : i42
+    llhd.assign %1, %v : i42
     // CHECK-NOT: llhd.prb
     %2 = llhd.prb %a : !hw.array<4xi42>
     // CHECK-NEXT: call @use_array_i42([[A]])
     func.call @use_array_i42(%2) : (!hw.array<4xi42>) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[A]]
+    // CHECK-NEXT: llhd.assign %a, [[A]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -710,29 +670,27 @@ hw.module @BasicProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) 
 // Conditional drives of signal projections.
 // CHECK-LABEL: @ConditionalProjectionDrive
 hw.module @ConditionalProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %w: i42, in %i: i2, in %q: i1, in %r: i1, in %s: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.sig.array_get
     %1 = llhd.sig.array_get %a[%i] : <!hw.array<4xi42>>
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : !hw.array<4xi42>
+    llhd.assign %a, %u : !hw.array<4xi42>
     // CHECK-NEXT: [[TMP:%.+]] = hw.array_get %u[%i]
     // CHECK-NEXT: [[FIELD1:%.+]] = comb.mux %q, %v, [[TMP]]
     // CHECK-NEXT: [[DRV1:%.+]] = hw.array_inject %u[%i], [[FIELD1]]
-    llhd.drv %1, %v after %0 if %q : i42
+    llhd.assign %1, %v if %q : i42
     // CHECK-NEXT: [[FIELD2:%.+]] = comb.mux %r, %w, [[FIELD1]]
     // CHECK-NEXT: [[DRV2:%.+]] = hw.array_inject [[DRV1]][%i], [[FIELD2]]
-    llhd.drv %1, %w after %0 if %r : i42
+    llhd.assign %1, %w if %r : i42
     // CHECK-NEXT: call @use_array_i42([[DRV2]])
     // CHECK-NEXT: call @use_i42([[FIELD2]])
     %2 = llhd.prb %a : !hw.array<4xi42>
     %3 = llhd.prb %1 : i42
     func.call @use_array_i42(%2) : (!hw.array<4xi42>) -> ()
     func.call @use_i42(%3) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}} :
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]] :
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -742,24 +700,23 @@ hw.module @ConditionalProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %w
     // CHECK-NOT: llhd.sig.array_get
     %1 = llhd.sig.array_get %a[%i] : <!hw.array<4xi42>>
     // CHECK-NEXT: [[DRV1:%.+]] = comb.mux %q, %u, [[A]]
-    llhd.drv %a, %u after %0 if %q : !hw.array<4xi42>
+    llhd.assign %a, %u if %q : !hw.array<4xi42>
     // CHECK-NEXT: [[TMP:%.+]] = hw.array_get [[DRV1]][%i]
     // CHECK-NEXT: [[FIELD2:%.+]] = comb.mux %r, %v, [[TMP]]
     // CHECK-NEXT: [[DRV2:%.+]] = hw.array_inject [[DRV1]][%i], [[FIELD2]]
     // CHECK-NEXT: [[ENABLE2:%.+]] = comb.or %r, %q
-    llhd.drv %1, %v after %0 if %r : i42
+    llhd.assign %1, %v if %r : i42
     // CHECK-NEXT: [[FIELD3:%.+]] = comb.mux %s, %w, [[FIELD2]]
     // CHECK-NEXT: [[DRV3:%.+]] = hw.array_inject [[DRV2]][%i], [[FIELD3]]
     // CHECK-NEXT: [[ENABLE3:%.+]] = comb.or %s, [[ENABLE2]]
-    llhd.drv %1, %w after %0 if %s : i42
+    llhd.assign %1, %w if %s : i42
     // CHECK-NEXT: call @use_array_i42([[DRV3]])
     // CHECK-NEXT: call @use_i42([[FIELD3]])
     %2 = llhd.prb %a : !hw.array<4xi42>
     %3 = llhd.prb %1 : i42
     func.call @use_array_i42(%2) : (!hw.array<4xi42>) -> ()
     func.call @use_i42(%3) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV3]] after {{%.+}} if [[ENABLE3]]
+    // CHECK-NEXT: llhd.assign %a, [[DRV3]] if [[ENABLE3]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -770,7 +727,7 @@ hw.module @ConditionalProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %w
 // treating all arrays as packed.
 // CHECK-LABEL: @DelayedProjectionDrive
 hw.module @DelayedProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %0 = llhd.constant_time <0ns, 1d, 0e>
+  %0 = llhd.constant_time <0ns, 1d>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
@@ -778,7 +735,7 @@ hw.module @DelayedProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2
     %1 = llhd.sig.array_get %a[%i] : <!hw.array<4xi42>>
     // CHECK-NEXT: [[TMP:%.+]] = hw.array_inject [[A]][%i], %v
     llhd.drv %1, %v after %0 : i42
-    // CHECK-NEXT: llhd.constant_time
+    // CHECK-NEXT: llhd.constant_time <0ns, 1d>
     // CHECK-NEXT: llhd.drv %a, [[TMP]] after {{%.+}}
     // CHECK-NEXT: llhd.halt
     llhd.halt
@@ -787,7 +744,6 @@ hw.module @DelayedProjectionDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2
 
 // CHECK-LABEL: @ProjectionThroughBlockArg
 hw.module @ProjectionThroughBlockArg(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
@@ -798,8 +754,8 @@ hw.module @ProjectionThroughBlockArg(in %u: !hw.array<4xi42>, in %v: i42, in %i:
     // CHECK: ^bb1([[ARG:%.+]]: !llhd.ref<i42>):
     // CHECK-NEXT: llhd.prb [[ARG]]
     %3 = llhd.prb %2 : i42
-    // CHECK-NEXT: llhd.drv [[ARG]]
-    llhd.drv %2, %v after %0 : i42
+    // CHECK-NEXT: llhd.assign [[ARG]]
+    llhd.assign %2, %v : i42
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -807,7 +763,6 @@ hw.module @ProjectionThroughBlockArg(in %u: !hw.array<4xi42>, in %v: i42, in %i:
 
 // CHECK-LABEL: @MultipleArrayGetsSameIndex
 hw.module @MultipleArrayGetsSameIndex(in %u: !hw.array<4xi42>, in %v: i42, in %w: i42, in %i: i2) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<4xi42>>
   // CHECK: llhd.process
   llhd.process {
@@ -820,8 +775,8 @@ hw.module @MultipleArrayGetsSameIndex(in %u: !hw.array<4xi42>, in %v: i42, in %w
     // CHECK-NEXT: [[A:%.+]] = llhd.prb %a
     // CHECK-NEXT: [[DRV1:%.+]] = hw.array_inject [[A]][%i], %v
     // CHECK-NEXT: [[DRV2:%.+]] = hw.array_inject [[DRV1]][%i], %w
-    llhd.drv %get1, %v after %0 : i42
-    llhd.drv %get2, %w after %0 : i42
+    llhd.assign %get1, %v : i42
+    llhd.assign %get2, %w : i42
     // Probe both projections
     // CHECK-NOT: llhd.prb
     %prb1 = llhd.prb %get1 : i42
@@ -830,8 +785,7 @@ hw.module @MultipleArrayGetsSameIndex(in %u: !hw.array<4xi42>, in %v: i42, in %w
     // CHECK-NEXT: call @use_i42(%w)
     func.call @use_i42(%prb1) : (i42) -> ()
     func.call @use_i42(%prb2) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[DRV2]] after {{%.+}}
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -842,7 +796,6 @@ hw.module @NestedArrayGet3D(
   in %u: !hw.array<5xarray<6xarray<7xi42>>>,
   in %v: i42, in %i: i3, in %j: i3, in %k: i3
 ) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.array<5xarray<6xarray<7xi42>>>>
   // CHECK: llhd.process
   llhd.process {
@@ -857,13 +810,12 @@ hw.module @NestedArrayGet3D(
     // CHECK-NEXT: [[INJECT1:%.+]] = hw.array_inject [[GET2]][%k], %v
     // CHECK-NEXT: [[INJECT2:%.+]] = hw.array_inject [[GET3]][%j], [[INJECT1]]
     // CHECK-NEXT: [[INJECT3:%.+]] = hw.array_inject [[A]][%i], [[INJECT2]]
-    llhd.drv %get3, %v after %0 : i42
+    llhd.assign %get3, %v : i42
     // Probe the innermost projection
     %prb = llhd.prb %get3 : i42
     // CHECK-NEXT: call @use_i42(%v)
     func.call @use_i42(%prb) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[INJECT3]] after {{%.+}}
+    // CHECK-NEXT: llhd.assign %a, [[INJECT3]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -871,12 +823,11 @@ hw.module @NestedArrayGet3D(
 
 // CHECK-LABEL: @BasicSigExtract
 hw.module @BasicSigExtract(in %u: i42, in %v: i10, in %i: i6, in %q: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : i42
+    llhd.assign %a, %u : i42
     // CHECK-NOT: llhd.sig.extract
     %1 = llhd.sig.extract %a from %i : <i42> -> <i10>
     // CHECK-NOT: llhd.drv
@@ -896,13 +847,12 @@ hw.module @BasicSigExtract(in %u: i42, in %v: i10, in %i: i6, in %q: i1) {
     // CHECK-NEXT: [[INJ9:%.+]] = comb.concat [[INJ8]], [[MUX]] : i32, i10
     // CHECK-NEXT: [[INJ10:%.+]] = comb.shl [[INJ9]], [[INJ2]] : i42
     // CHECK-NEXT: [[INJ11:%.+]] = comb.or [[INJ7]], [[INJ10]] : i42
-    llhd.drv %1, %v after %0 if %q : i10
+    llhd.assign %1, %v if %q : i10
     // CHECK-NOT: llhd.prb
     %2 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42([[INJ11]])
     func.call @use_i42(%2) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[INJ11]]
+    // CHECK-NEXT: llhd.assign %a, [[INJ11]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -910,25 +860,23 @@ hw.module @BasicSigExtract(in %u: i42, in %v: i10, in %i: i6, in %q: i1) {
 
 // CHECK-LABEL: @BasicStructExtract
 hw.module @BasicStructExtract(in %u: !hw.struct<f: i42>, in %v: i42, in %q: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.struct<f: i42>>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : !hw.struct<f: i42>
+    llhd.assign %a, %u : !hw.struct<f: i42>
     // CHECK-NOT: llhd.sig.struct_extract
     %1 = llhd.sig.struct_extract %a["f"] : <!hw.struct<f: i42>>
     // CHECK-NOT: llhd.drv
     // CHECK-NEXT: [[EXT:%.+]] = hw.struct_extract %u["f"]
     // CHECK-NEXT: [[MUX:%.+]] = comb.mux %q, %v, [[EXT]]
     // CHECK-NEXT: [[INJ:%.+]] = hw.struct_inject %u["f"], [[MUX]]
-    llhd.drv %1, %v after %0 if %q : i42
+    llhd.assign %1, %v if %q : i42
     // CHECK-NOT: llhd.prb
     %2 = llhd.prb %1 : i42
     // CHECK-NEXT: call @use_i42([[MUX]])
     func.call @use_i42(%2) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[INJ]]
+    // CHECK-NEXT: llhd.assign %a, [[INJ]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -936,7 +884,6 @@ hw.module @BasicStructExtract(in %u: !hw.struct<f: i42>, in %v: i42, in %q: i1) 
 
 // CHECK-LABEL: @CombCreateDynamicInject
 hw.module @CombCreateDynamicInject(in %u: i42, in %v: i10, in %q: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <i42>
 
   // offset = 0
@@ -944,13 +891,12 @@ hw.module @CombCreateDynamicInject(in %u: i42, in %v: i10, in %q: i1) {
   llhd.process {
     // CHECK-NEXT: [[TMP1:%.+]] = comb.extract %u from 10 : (i42) -> i32
     // CHECK-NEXT: [[TMP2:%.+]] = comb.concat [[TMP1]], %v : i32, i10
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[TMP2]]
+    // CHECK-NEXT: llhd.assign %a, [[TMP2]]
     // CHECK-NEXT: llhd.halt
     %c0_i6 = hw.constant 0 : i6
     %1 = llhd.sig.extract %a from %c0_i6 : <i42> -> <i10>
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %1, %v after %0 : i10
+    llhd.assign %a, %u : i42
+    llhd.assign %1, %v : i10
     llhd.halt
   }
 
@@ -960,13 +906,12 @@ hw.module @CombCreateDynamicInject(in %u: i42, in %v: i10, in %q: i1) {
     // CHECK-NEXT: [[TMP1:%.+]] = comb.extract %u from 30 : (i42) -> i12
     // CHECK-NEXT: [[TMP2:%.+]] = comb.extract %u from 0 : (i42) -> i20
     // CHECK-NEXT: [[TMP3:%.+]] = comb.concat [[TMP1]], %v, [[TMP2]] : i12, i10, i20
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[TMP3]]
+    // CHECK-NEXT: llhd.assign %a, [[TMP3]]
     // CHECK-NEXT: llhd.halt
     %c20_i6 = hw.constant 20 : i6
     %1 = llhd.sig.extract %a from %c20_i6 : <i42> -> <i10>
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %1, %v after %0 : i10
+    llhd.assign %a, %u : i42
+    llhd.assign %1, %v : i10
     llhd.halt
   }
 
@@ -975,13 +920,12 @@ hw.module @CombCreateDynamicInject(in %u: i42, in %v: i10, in %q: i1) {
   llhd.process {
     // CHECK-NEXT: [[TMP1:%.+]] = comb.extract %u from 0 : (i42) -> i32
     // CHECK-NEXT: [[TMP2:%.+]] = comb.concat %v, [[TMP1]] : i10, i32
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[TMP2]]
+    // CHECK-NEXT: llhd.assign %a, [[TMP2]]
     // CHECK-NEXT: llhd.halt
     %c32_i6 = hw.constant 32 : i6
     %1 = llhd.sig.extract %a from %c32_i6 : <i42> -> <i10>
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %1, %v after %0 : i10
+    llhd.assign %a, %u : i42
+    llhd.assign %1, %v : i10
     llhd.halt
   }
 
@@ -991,34 +935,34 @@ hw.module @CombCreateDynamicInject(in %u: i42, in %v: i10, in %q: i1) {
     // CHECK-NEXT: [[TMP1:%.+]] = comb.extract %v from 0 : (i10) -> i5
     // CHECK-NEXT: [[TMP2:%.+]] = comb.extract %u from 0 : (i42) -> i37
     // CHECK-NEXT: [[TMP3:%.+]] = comb.concat [[TMP1]], [[TMP2]] : i5, i37
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[TMP3]]
+    // CHECK-NEXT: llhd.assign %a, [[TMP3]]
     // CHECK-NEXT: llhd.halt
     %c37_i6 = hw.constant 37 : i6
     %1 = llhd.sig.extract %a from %c37_i6 : <i42> -> <i10>
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %1, %v after %0 : i10
+    llhd.assign %a, %u : i42
+    llhd.assign %1, %v : i10
     llhd.halt
   }
 
   // offset >= 42
   // CHECK: llhd.process
   llhd.process {
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, %u
+    // CHECK-NEXT: llhd.assign %a, %u
     // CHECK-NEXT: llhd.halt
     %c42_i6 = hw.constant 42 : i6
     %1 = llhd.sig.extract %a from %c42_i6 : <i42> -> <i10>
-    llhd.drv %a, %u after %0 : i42
-    llhd.drv %1, %v after %0 : i10
+    llhd.assign %a, %u : i42
+    llhd.assign %1, %v : i10
     llhd.halt
   }
 }
 
 func.func private @use_i8(%arg0: i8)
+func.func private @use_i32(%arg0: i32)
 func.func private @use_i42(%arg0: i42)
 func.func private @use_ref_i42(%arg0: !llhd.ref<i42>)
 func.func private @use_array_i42(%arg0: !hw.array<4xi42>)
+func.func private @use_array_i8(%arg0: !hw.array<4xi8>)
 func.func private @use_union(%arg0: !hw.union<a: i8, b: i8>)
 
 // Regression test that verifies probe is inserted post use.
@@ -1040,7 +984,6 @@ hw.module @ProbePostDef() {
 hw.module @DominanceTest1() {
   %true = hw.constant true
   %false = hw.constant false
-  %3 = llhd.constant_time <0ns, 0d, 1e>
   %clock_0 = llhd.sig name "clock" %false : <i1>
   // CHECK: llhd.process
   llhd.process {
@@ -1058,7 +1001,7 @@ hw.module @DominanceTest1() {
     // CHECK-NEXT: cf.br ^bb1([[TMP1]] : i1)
     %c0_i4 = hw.constant 0 : i4
     %ready_T = llhd.sig %c0_i4 : <i4>
-    llhd.drv %ready_T, %c0_i4 after %3 : i4
+    llhd.assign %ready_T, %c0_i4 : i4
     %6 = llhd.prb %ready_T : i4
     cf.br ^bb1
   }
@@ -1077,9 +1020,8 @@ hw.module @DominanceTest2() {
     // CHECK-NEXT: ^bb1:
     // CHECK-NEXT: cf.br ^bb2
     %0 = llhd.prb %b : i1
-    %1 = llhd.constant_time <0ns, 0d, 1e>
     %g = llhd.sig %false : <i1>
-    llhd.drv %g, %0 after %1 : i1
+    llhd.assign %g, %0 : i1
     cf.br ^bb2
   ^bb2:
     // CHECK-NEXT: ^bb2
@@ -1093,12 +1035,11 @@ hw.module @DominanceTest2() {
 
 // CHECK-LABEL: @ProjectionAndDriveInDifferentBlocks
 hw.module @ProjectionAndDriveInDifferentBlocks(in %u: !hw.struct<f: i42>, in %v: i42, in %q: i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %a = llhd.sig %u : <!hw.struct<f: i42>>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : !hw.struct<f: i42>
+    llhd.assign %a, %u : !hw.struct<f: i42>
     // CHECK-NOT: llhd.sig.struct_extract
     %1 = llhd.sig.struct_extract %a["f"] : <!hw.struct<f: i42>>
     // CHECK-NEXT: cf.br ^bb1
@@ -1109,9 +1050,8 @@ hw.module @ProjectionAndDriveInDifferentBlocks(in %u: !hw.struct<f: i42>, in %v:
     // CHECK-NEXT: [[EXT:%.+]] = hw.struct_extract %u["f"]
     // CHECK-NEXT: [[MUX:%.+]] = comb.mux %q, %v, [[EXT]]
     // CHECK-NEXT: [[INJ:%.+]] = hw.struct_inject %u["f"], [[MUX]]
-    llhd.drv %1, %v after %0 if %q : i42
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[INJ]]
+    llhd.assign %1, %v if %q : i42
+    // CHECK-NEXT: llhd.assign %a, [[INJ]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -1120,7 +1060,6 @@ hw.module @ProjectionAndDriveInDifferentBlocks(in %u: !hw.struct<f: i42>, in %v:
 // Local signals should be removed.
 // CHECK-LABEL: @LocalSignals
 hw.module @LocalSignals(in %u: i42, in %v: i42) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NOT: llhd.sig
@@ -1130,7 +1069,7 @@ hw.module @LocalSignals(in %u: i42, in %v: i42) {
     // CHECK-NEXT: call @use_i42(%u)
     func.call @use_i42(%1) : (i42) -> ()
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %v after %0 : i42
+    llhd.assign %a, %v : i42
     // CHECK-NOT: llhd.prb
     %2 = llhd.prb %a : i42
     // CHECK-NEXT: call @use_i42(%v)
@@ -1163,7 +1102,7 @@ hw.module @CaptureNonProbeValuesAcrossWait(in %a: i42, in %b: i42) {
 // still need to be captured across later waits that their definition dominates.
 // CHECK-LABEL: @CapturePostWaitValueOnlyAcrossDominatedWaits
 hw.module @CapturePostWaitValueOnlyAcrossDominatedWaits(in %a: i42) {
-  %d = llhd.constant_time <1fs, 0d, 0e>
+  %d = llhd.constant_time <1fs, 0d>
   llhd.process {
     // CHECK: llhd.wait delay [[D:%.+]], ^bb1
     llhd.wait delay %d, ^bb1
@@ -1188,13 +1127,12 @@ hw.module @CapturePostWaitValueOnlyAcrossDominatedWaits(in %a: i42) {
 // IntegerType limit.
 // CHECK-LABEL: @RealSignalDrivePromoted
 hw.module @RealSignalDrivePromoted(in %clk : i1, in %a : f64, in %b : f64) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: %r = llhd.sig %b : <f64>
   %r = llhd.sig %b : <f64>
   // CHECK: llhd.process
   // CHECK: arith.constant 0.000000e+00 : f64
   // CHECK: ^bb1([[VAL:%.+]]: f64, [[EN:%.+]]: i1):
-  // CHECK:   llhd.drv %r, [[VAL]] after {{%.+}} if [[EN]] : f64
+  // CHECK:   llhd.assign %r, [[VAL]] if [[EN]] : f64
   // CHECK:   llhd.wait (%clk : i1), ^bb2
   // CHECK: ^bb2:
   // CHECK:   cf.br ^bb1(%a, %true : f64, i1)
@@ -1203,7 +1141,7 @@ hw.module @RealSignalDrivePromoted(in %clk : i1, in %a : f64, in %b : f64) {
   ^bb1:
     llhd.wait (%clk : i1), ^bb2
   ^bb2:
-    llhd.drv %r, %a after %0 : f64
+    llhd.assign %r, %a : f64
     cf.br ^bb1
   }
 }
@@ -1214,7 +1152,6 @@ hw.module @TooWideSignalNotPromoted(
   in %a : !hw.array<2097153xi8>,
   in %b : !hw.array<2097153xi8>
 ) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: %r = llhd.sig %b : <!hw.array<2097153xi8>>
   %r = llhd.sig %b : <!hw.array<2097153xi8>>
   llhd.process {
@@ -1222,8 +1159,8 @@ hw.module @TooWideSignalNotPromoted(
   ^bb1:
     llhd.wait (%clk : i1), ^bb2
   ^bb2:
-    // CHECK: llhd.drv %r, %a after
-    llhd.drv %r, %a after %0 : !hw.array<2097153xi8>
+    // CHECK: llhd.assign %r, %a
+    llhd.assign %r, %a : !hw.array<2097153xi8>
     cf.br ^bb1
   }
 }
@@ -1233,7 +1170,6 @@ hw.module @TooWideSignalNotPromoted(
 // for unpacking (union_extract) and packing (union_create).
 // CHECK-LABEL: @UnionSignalPromoted
 hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %q : i1) {
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0 = hw.constant 0 : i8
   %init = hw.bitcast %c0 : (i8) -> !hw.union<a: i8, b: i8>
   %a = llhd.sig %init : <!hw.union<a: i8, b: i8>>
@@ -1241,7 +1177,7 @@ hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %
   llhd.process {
     // Drive the whole union, then project a field.
     // CHECK-NOT: llhd.drv
-    llhd.drv %a, %u after %0 : !hw.union<a: i8, b: i8>
+    llhd.assign %a, %u : !hw.union<a: i8, b: i8>
     // CHECK-NOT: llhd.sig.struct_extract
     %1 = llhd.sig.struct_extract %a["a"] : <!hw.union<a: i8, b: i8>>
     // Conditionally drive the field (tests unpack and pack with unions).
@@ -1249,7 +1185,7 @@ hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %
     // CHECK-NEXT: [[EXT:%.+]] = hw.union_extract %u["a"]
     // CHECK-NEXT: [[MUX:%.+]] = comb.mux %q, %v, [[EXT]]
     // CHECK-NEXT: [[INJ:%.+]] = hw.union_create "a", [[MUX]]
-    llhd.drv %1, %v after %0 if %q : i8
+    llhd.assign %1, %v if %q : i8
     // Probe the field (the value should be forwarded through the union).
     // CHECK-NOT: llhd.prb
     // CHECK-NEXT: [[READFIELD:%.+]] = hw.union_extract [[INJ]]["a"]
@@ -1261,8 +1197,7 @@ hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %
     %3 = llhd.prb %a : !hw.union<a: i8, b: i8>
     // CHECK-NEXT: call @use_union([[INJ]])
     func.call @use_union(%3) : (!hw.union<a: i8, b: i8>) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %a, [[INJ]]
+    // CHECK-NEXT: llhd.assign %a, [[INJ]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -1276,8 +1211,7 @@ hw.module @UnionSignalPromoted(in %u : !hw.union<a: i8, b: i8>, in %v : i8, in %
 // sig.extract becoming a bit update of that slot.
 // CHECK-LABEL: @NestedProjectionAcrossBlocks
 hw.module @NestedProjectionAcrossBlocks(in %v : i4) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
-  %d = llhd.constant_time <1ns, 0d, 0e>
+  %d = llhd.constant_time <1ns, 0d>
   %true = hw.constant true
   %c0 = hw.constant 0 : i8
   %c4 = hw.constant -4 : i3
@@ -1287,19 +1221,19 @@ hw.module @NestedProjectionAcrossBlocks(in %v : i4) {
   // CHECK-NEXT: llhd.process
   %mem = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
-    // CHECK: llhd.drv [[E]], %c0_i8
+    // CHECK: llhd.assign [[E]], %c0_i8
     %e = llhd.sig.array_get %mem[%true] : <!hw.array<2xi8>>
-    llhd.drv %e, %c0 after %t : i8
+    llhd.assign %e, %c0 : i8
     llhd.wait delay %d, ^bb1
   ^bb1:
     // This sig.extract is a nested projection of %e, but in a different block.
     // CHECK: [[OLD:%.+]] = llhd.prb [[E]]
     // CHECK: [[LO:%.+]] = comb.extract [[OLD]] from 0
     // CHECK: [[NEW:%.+]] = comb.concat %v, [[LO]]
-    // CHECK: llhd.drv [[E]], [[NEW]]
+    // CHECK: llhd.assign [[E]], [[NEW]]
     // CHECK-NOT: llhd.sig.extract
     %sub = llhd.sig.extract %e from %c4 : <i8> -> <i4>
-    llhd.drv %sub, %v after %t : i4
+    llhd.assign %sub, %v : i4
     llhd.halt
   }
 }
@@ -1310,8 +1244,7 @@ hw.module @NestedProjectionAcrossBlocks(in %v : i4) {
 // projections, causing a "no definition reaches drive" assertion.
 // CHECK-LABEL: @MultiDelayProjectionDrive
 hw.module @MultiDelayProjectionDrive() {
-  %t_eps = llhd.constant_time <0ns, 0d, 1e>
-  %t_delta = llhd.constant_time <0ns, 1d, 0e>
+  %t_delta = llhd.constant_time <0ns, 1d>
   %c0 = hw.constant 0 : i8
   %true = hw.constant true
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
@@ -1319,8 +1252,8 @@ hw.module @MultiDelayProjectionDrive() {
   %sig = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
     %e = llhd.sig.array_get %sig[%true] : <!hw.array<2xi8>>
-    // CHECK: llhd.drv
-    llhd.drv %e, %c0 after %t_eps : i8
+    // CHECK: llhd.assign
+    llhd.assign %e, %c0 : i8
     // CHECK: llhd.drv
     llhd.drv %e, %c0 after %t_delta : i8
     llhd.halt
@@ -1333,8 +1266,7 @@ hw.module @MultiDelayProjectionDrive() {
 // matching block arguments.
 // CHECK-LABEL: @SameSuccessorCondBr
 hw.module @SameSuccessorCondBr(in %clk : i1) {
-  %t_delta = llhd.constant_time <0ns, 1d, 0e>
-  %t_eps = llhd.constant_time <0ns, 0d, 1e>
+  %t_delta = llhd.constant_time <0ns, 1d>
   %true = hw.constant true
   %false = hw.constant false
   %c0_i32 = hw.constant 0 : i32
@@ -1345,7 +1277,7 @@ hw.module @SameSuccessorCondBr(in %clk : i1) {
     cf.br ^bb1(%clk, %c0_i32, %false, %c0_i32, %false, %false, %false : i1, i32, i1, i32, i1, i1, i1)
   // CHECK: ^bb1({{.*}}: i1, {{.*}}: i32, {{.*}}: i1, {{.*}}: i32, {{.*}}: i1, {{.*}}: i1, {{.*}}: i1, {{.*}}: i32):
   ^bb1(%0: i1, %1: i32, %2: i1, %3: i32, %4: i1, %5: i1, %6: i1):
-    llhd.drv %cnt, %1 after %t_eps if %2 : i32
+    llhd.assign %cnt, %1 if %2 : i32
     llhd.drv %cnt, %3 after %t_delta if %4 : i32
     llhd.wait yield (%5, %6 : i1, i1), (%clk : i1), ^bb2(%0 : i1)
   ^bb2(%7: i1):
@@ -1368,7 +1300,6 @@ hw.module @SameSuccessorCondBr(in %clk : i1) {
 // CHECK-LABEL: @Timeout_10314
 hw.module private @Timeout_10314() {
   %c0_i5 = hw.constant 0 : i5
-  %0 = llhd.constant_time <0ns, 0d, 1e>
   %c0_i32 = hw.constant 0 : i32
   %c0_i4 = hw.constant 0 : i4
   %c0_i8 = hw.constant 0 : i8
@@ -1381,7 +1312,7 @@ hw.module private @Timeout_10314() {
   ^bb1:  // 2 preds: ^bb0, ^bb7
     %1 = llhd.prb %rdptr0 : i3
     %2 = comb.concat %c0_i5, %1 : i5, i3
-    llhd.drv %rdptr0_dec, %2 after %0 : i8
+    llhd.assign %rdptr0_dec, %2 : i8
     cf.br ^bb2
   ^bb2:  // 2 preds: ^bb1, ^bb6
     cf.cond_br %false, ^bb3, ^bb7
@@ -1405,7 +1336,6 @@ hw.module private @Timeout_10314() {
 // declared on one branch. Preserve the bits not overwritten by a partial drive.
 // CHECK-LABEL: @UninitializedPartialDrive
 hw.module @UninitializedPartialDrive() {
-  %time = llhd.constant_time <0ns, 0d, 1e>
   %zero = hw.constant 0 : i12
   %offset = hw.constant 0 : i5
   %false = hw.constant false
@@ -1419,9 +1349,11 @@ hw.module @UninitializedPartialDrive() {
     // CHECK-NEXT: [[HIGH:%.+]] = comb.extract [[INIT]] from 12 : (i32) -> i20
     // CHECK-NEXT: [[VALUE:%.+]] = comb.concat [[HIGH]], %c0_i12 : i20, i12
     %part = llhd.sig.extract %sig from %offset : <i32> -> <i12>
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %[[SIG]], [[VALUE]]
-    llhd.drv %part, %zero after %time : i12
+    llhd.assign %part, %zero : i12
+    // CHECK-NEXT: call @use_i32([[VALUE]])
+    %value = llhd.prb %sig : i32
+    func.call @use_i32(%value) : (i32) -> ()
+    // CHECK-NEXT: llhd.assign %[[SIG]], [[VALUE]]
     cf.br ^bb2
   ^bb2:
     llhd.halt
@@ -1432,18 +1364,16 @@ hw.module @UninitializedPartialDrive() {
 // even if the signal has no initializer. No probe is needed.
 // CHECK-LABEL: @UninitializedWrittenBeforeConditionalDrive
 hw.module @UninitializedWrittenBeforeConditionalDrive(in %u: i42, in %v: i42, in %q: i1) {
-  %time = llhd.constant_time <0ns, 0d, 1e>
   %sig = llhd.sig : <i42>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NEXT: [[VALUE:%.+]] = comb.mux %q, %v, %u : i42
-    llhd.drv %sig, %u after %time : i42
-    llhd.drv %sig, %v after %time if %q : i42
+    llhd.assign %sig, %u : i42
+    llhd.assign %sig, %v if %q : i42
     %value = llhd.prb %sig : i42
     // CHECK-NEXT: call @use_i42([[VALUE]])
     func.call @use_i42(%value) : (i42) -> ()
-    // CHECK-NEXT: llhd.constant_time
-    // CHECK-NEXT: llhd.drv %sig, [[VALUE]]
+    // CHECK-NEXT: llhd.assign %sig, [[VALUE]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -1453,14 +1383,13 @@ hw.module @UninitializedWrittenBeforeConditionalDrive(in %u: i42, in %v: i42, in
 // local signal can be removed without probing its unspecified initial value.
 // CHECK-LABEL: @UninitializedWrittenBeforePartialDrive
 hw.module @UninitializedWrittenBeforePartialDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %time = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: llhd.process
   llhd.process {
     %sig = llhd.sig : <!hw.array<4xi42>>
-    llhd.drv %sig, %u after %time : !hw.array<4xi42>
+    llhd.assign %sig, %u : !hw.array<4xi42>
     %part = llhd.sig.array_get %sig[%i] : <!hw.array<4xi42>>
     // CHECK-NEXT: [[VALUE:%.+]] = hw.array_inject %u[%i], %v
-    llhd.drv %part, %v after %time : i42
+    llhd.assign %part, %v : i42
     %value = llhd.prb %sig : !hw.array<4xi42>
     // CHECK-NEXT: call @use_array_i42([[VALUE]])
     func.call @use_array_i42(%value) : (!hw.array<4xi42>) -> ()
@@ -1473,7 +1402,6 @@ hw.module @UninitializedWrittenBeforePartialDrive(in %u: !hw.array<4xi42>, in %v
 // must probe the new signal for the value forwarded when the drive is disabled.
 // CHECK-LABEL: @UninitializedConditionalDriveInLoop
 hw.module @UninitializedConditionalDriveInLoop(in %v: i42, in %q: i1, in %again: i1) {
-  %time = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NEXT: cf.br ^bb1
@@ -1484,7 +1412,7 @@ hw.module @UninitializedConditionalDriveInLoop(in %v: i42, in %q: i1, in %again:
     %sig = llhd.sig : <i42>
     // CHECK-NEXT: [[INIT:%.+]] = llhd.prb %sig : i42
     // CHECK-NEXT: [[VALUE:%.+]] = comb.mux %q, %v, [[INIT]] : i42
-    llhd.drv %sig, %v after %time if %q : i42
+    llhd.assign %sig, %v if %q : i42
     %value = llhd.prb %sig : i42
     // CHECK-NEXT: call @use_i42([[VALUE]])
     func.call @use_i42(%value) : (i42) -> ()
@@ -1498,7 +1426,7 @@ hw.module @UninitializedConditionalDriveInLoop(in %v: i42, in %q: i1, in %again:
 // the starting value. Both values need the read after the local declaration.
 // CHECK-LABEL: @UninitializedDelayedPartialDrive
 hw.module @UninitializedDelayedPartialDrive(in %v: i42, in %i: i2) {
-  %time = llhd.constant_time <0ns, 1d, 0e>
+  %time = llhd.constant_time <0ns, 1d>
   // CHECK: llhd.process
   llhd.process {
     // CHECK-NEXT: %sig = llhd.sig : <!hw.array<4xi42>>
@@ -1510,7 +1438,7 @@ hw.module @UninitializedDelayedPartialDrive(in %v: i42, in %i: i2) {
     %value = llhd.prb %sig : !hw.array<4xi42>
     // CHECK-NEXT: call @use_array_i42([[INIT]])
     func.call @use_array_i42(%value) : (!hw.array<4xi42>) -> ()
-    // CHECK-NEXT: [[TIME:%.+]] = llhd.constant_time <0ns, 1d, 0e>
+    // CHECK-NEXT: [[TIME:%.+]] = llhd.constant_time <0ns, 1d>
     // CHECK-NEXT: llhd.drv %sig, [[VALUE]] after [[TIME]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
@@ -1523,7 +1451,7 @@ hw.module @UninitializedDelayedPartialDrive(in %v: i42, in %i: i2) {
 // CHECK-LABEL: @InitializedDelayedPartialDrive
 // CHECK-SAME: (in %u : !hw.array<4xi42>, in %v : i42, in %i : i2)
 hw.module @InitializedDelayedPartialDrive(in %u: !hw.array<4xi42>, in %v: i42, in %i: i2) {
-  %time = llhd.constant_time <0ns, 1d, 0e>
+  %time = llhd.constant_time <0ns, 1d>
   // CHECK: llhd.process
   llhd.process {
     %sig = llhd.sig %u : <!hw.array<4xi42>>
@@ -1532,6 +1460,93 @@ hw.module @InitializedDelayedPartialDrive(in %u: !hw.array<4xi42>, in %v: i42, i
     %value = llhd.prb %sig : !hw.array<4xi42>
     // CHECK-NEXT: call @use_array_i42(%u)
     func.call @use_array_i42(%value) : (!hw.array<4xi42>) -> ()
+     // CHECK-NEXT: llhd.halt
+    llhd.halt
+  }
+}
+
+// Projection chains of slots, including any constants defined inside the
+// process, are moved out of the process.
+// CHECK-LABEL: @HoistSlotWithLocalConstants
+hw.module @HoistSlotWithLocalConstants(in %u: i1) {
+  %c0_i8 = hw.constant 0 : i8
+  %init = hw.array_create %c0_i8, %c0_i8, %c0_i8, %c0_i8 : i8
+  // CHECK: [[A:%.+]] = llhd.sig
+  %a = llhd.sig %init : <!hw.array<4xi8>>
+  // CHECK-NEXT: [[C1_I2:%.+]] = hw.constant 1 : i2
+  // CHECK-NEXT: [[ELEM:%.+]] = llhd.sig.array_get [[A]][[[C1_I2]]]
+  // CHECK-NEXT: [[C1_I3:%.+]] = hw.constant 1 : i3
+  // CHECK-NEXT: [[BIT:%.+]] = llhd.sig.extract [[ELEM]] from [[C1_I3]]
+  // CHECK-NEXT: llhd.process {
+  llhd.process {
+    cf.br ^bb1
+  ^bb1:
+    %c1_i2 = hw.constant 1 : i2
+    %c1_i3 = hw.constant 1 : i3
+    %0 = llhd.sig.array_get %a[%c1_i2] : <!hw.array<4xi8>>
+    %1 = llhd.sig.extract %0 from %c1_i3 : <i8> -> <i1>
+    // CHECK: llhd.assign [[BIT]], %u
+    llhd.assign %1, %u : i1
+    llhd.wait ^bb1
+  }
+}
+
+// Constant projections into provably disjoint parts of a signal are promoted
+// as independent slots. Each projection becomes the slot and is hoisted out of
+// the process, and the parent signal is never probed or driven as a whole.
+// CHECK-LABEL: @DisjointProjectionsPromotedIndependently
+hw.module @DisjointProjectionsPromotedIndependently(in %u: !hw.array<4xi8>, in %v: i8, in %w: i8) {
+  %c0_i2 = hw.constant 0 : i2
+  %c1_i2 = hw.constant 1 : i2
+  // CHECK: %a = llhd.sig
+  %a = llhd.sig %u : <!hw.array<4xi8>>
+  // CHECK-DAG: [[A0:%.+]] = llhd.sig.array_get %a[%c0_i2]
+  // CHECK-DAG: [[A1:%.+]] = llhd.sig.array_get %a[%c1_i2]
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NOT: llhd.prb
+    // CHECK-NOT: llhd.sig.array_get
+    %1 = llhd.sig.array_get %a[%c0_i2] : <!hw.array<4xi8>>
+    %2 = llhd.sig.array_get %a[%c1_i2] : <!hw.array<4xi8>>
+    llhd.assign %1, %v : i8
+    llhd.assign %2, %w : i8
+    %3 = llhd.prb %1 : i8
+    %4 = llhd.prb %2 : i8
+    // CHECK-NEXT: call @use_i8(%v)
+    // CHECK-NEXT: call @use_i8(%w)
+    func.call @use_i8(%3) : (i8) -> ()
+    func.call @use_i8(%4) : (i8) -> ()
+    // CHECK-DAG: llhd.assign [[A0]], %v
+    // CHECK-DAG: llhd.assign [[A1]], %w
+    // CHECK-NOT: llhd.assign %a,
+    // CHECK: llhd.halt
+    llhd.halt
+  }
+}
+
+// A dynamic projection can alias any of its siblings, so the parent signal is
+// promoted as a whole even though the other projection has a constant index.
+// CHECK-LABEL: @DynamicProjectionPromotesParent
+hw.module @DynamicProjectionPromotesParent(in %u: !hw.array<4xi8>, in %v: i8, in %w: i8, in %i: i2) {
+  %c0_i2 = hw.constant 0 : i2
+  %a = llhd.sig %u : <!hw.array<4xi8>>
+  // CHECK-NOT: llhd.sig.array_get
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NEXT: [[A:%.+]] = llhd.prb %a
+    // CHECK-NOT: llhd.sig.array_get
+    %1 = llhd.sig.array_get %a[%c0_i2] : <!hw.array<4xi8>>
+    %2 = llhd.sig.array_get %a[%i] : <!hw.array<4xi8>>
+    // CHECK-NEXT: [[INJ1:%.+]] = hw.array_inject [[A]][%c0_i2], %v
+    llhd.assign %1, %v : i8
+    // CHECK-NEXT: [[INJ2:%.+]] = hw.array_inject [[INJ1]][%i], %w
+    llhd.assign %2, %w : i8
+    // The probe must observe the dynamic drive, which may have hit index 0.
+    // CHECK-NEXT: [[GET:%.+]] = hw.array_get [[INJ2]][%c0_i2]
+    %3 = llhd.prb %1 : i8
+    // CHECK-NEXT: call @use_i8([[GET]])
+    func.call @use_i8(%3) : (i8) -> ()
+    // CHECK-NEXT: llhd.assign %a, [[INJ2]]
     // CHECK-NEXT: llhd.halt
     llhd.halt
   }
@@ -1543,7 +1558,6 @@ hw.module @InitializedDelayedPartialDrive(in %u: !hw.array<4xi42>, in %v: i42, i
 // narrowed to the element, so the process no longer drives the whole signal.
 // CHECK-LABEL: @FieldSlotPerElement
 hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %true = hw.constant true
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
@@ -1552,27 +1566,27 @@ hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
   // CHECK-NEXT: llhd.process
   // CHECK-NOT: llhd.prb %x
   // CHECK: [[SUM:%.+]] = comb.add %v, %u
-  // CHECK: llhd.drv [[E0]], [[SUM]]
+  // CHECK: llhd.assign [[E0]], [[SUM]]
   // CHECK: [[E1:%.+]] = llhd.sig.array_get %x[%true]
   // CHECK-NEXT: llhd.process
-  // CHECK: llhd.drv [[E1]], %u
+  // CHECK: llhd.assign [[E1]], %u
   %x = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
     cf.br ^bb1
   ^bb1:
     %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
-    llhd.drv %e, %v after %t : i8
+    llhd.assign %e, %v : i8
     %w = llhd.prb %x : !hw.array<2xi8>
     %old = hw.array_get %w[%false] : !hw.array<2xi8>, i1
     %n = comb.add %old, %u : i8
-    llhd.drv %e, %n after %t : i8
+    llhd.assign %e, %n : i8
     llhd.wait (%v, %u : i8, i8), ^bb1
   }
   llhd.process {
     cf.br ^bb1
   ^bb1:
     %e = llhd.sig.array_get %x[%true] : <!hw.array<2xi8>>
-    llhd.drv %e, %u after %t : i8
+    llhd.assign %e, %u : i8
     llhd.wait (%u : i8), ^bb1
   }
 }
@@ -1581,7 +1595,6 @@ hw.module @FieldSlotPerElement(in %v : i8, in %u : i8) {
 // first uses them.
 // CHECK-LABEL: @FieldSlotsInFirstUseOrder
 hw.module @FieldSlotsInFirstUseOrder(in %v : i8, in %u : i8) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
   // CHECK: %z = llhd.sig
@@ -1589,9 +1602,9 @@ hw.module @FieldSlotsInFirstUseOrder(in %v : i8, in %u : i8) {
   // CHECK-NEXT: [[X0:%.+]] = llhd.sig.array_get %x[%false]
   // CHECK-NEXT: [[Z0:%.+]] = llhd.sig.array_get %z[%false]
   // CHECK-NEXT: llhd.process
-  // CHECK: llhd.drv [[Y0]], %v
-  // CHECK: llhd.drv [[X0]], %u
-  // CHECK: llhd.drv [[Z0]], %u
+  // CHECK: llhd.assign [[Y0]], %v
+  // CHECK: llhd.assign [[X0]], %u
+  // CHECK: llhd.assign [[Z0]], %u
   %x = llhd.sig %init : <!hw.array<2xi8>>
   %y = llhd.sig %init : <!hw.array<2xi8>>
   %z = llhd.sig %init : <!hw.array<2xi8>>
@@ -1599,11 +1612,11 @@ hw.module @FieldSlotsInFirstUseOrder(in %v : i8, in %u : i8) {
     cf.br ^bb1
   ^bb1:
     %ey = llhd.sig.array_get %y[%false] : <!hw.array<2xi8>>
-    llhd.drv %ey, %v after %t : i8
+    llhd.assign %ey, %v : i8
     %ex = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
-    llhd.drv %ex, %u after %t : i8
+    llhd.assign %ex, %u : i8
     %ez = llhd.sig.array_get %z[%false] : <!hw.array<2xi8>>
-    llhd.drv %ez, %u after %t : i8
+    llhd.assign %ez, %u : i8
     llhd.wait (%v, %u : i8, i8), ^bb1
   }
 }
@@ -1615,7 +1628,6 @@ hw.module @FieldSlotsInFirstUseOrder(in %v : i8, in %u : i8) {
 // the slot.
 // CHECK-LABEL: @FieldSlotSlicesOfDuplicateProjection
 hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : i4) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %c0_i8 = hw.constant 0 : i8
   %c0_i3 = hw.constant 0 : i3
@@ -1624,8 +1636,8 @@ hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : 
   // CHECK: %x = llhd.sig
   // CHECK-NEXT: [[E0:%.+]] = llhd.sig.array_get %x[%false]
   // CHECK-NEXT: llhd.process
-  // CHECK-NOT: llhd.drv %x,
-  // CHECK: llhd.drv [[E0]],
+  // CHECK-NOT: llhd.{{drv|assign}} %x,
+  // CHECK: llhd.assign [[E0]],
   %x = llhd.sig %init : <!hw.array<2xi8>>
   llhd.process {
     cf.br ^bb1
@@ -1633,14 +1645,14 @@ hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : 
     cf.cond_br %c, ^bb2, ^bb3
   ^bb2:
     %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
-    llhd.drv %e, %c0_i8 after %t : i8
+    llhd.assign %e, %c0_i8 : i8
     cf.br ^bb4
   ^bb3:
     %f = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
     %lo = llhd.sig.extract %f from %c0_i3 : <i8> -> <i4>
-    llhd.drv %lo, %v after %t : i4
+    llhd.assign %lo, %v : i4
     %hi = llhd.sig.extract %f from %c4_i3 : <i8> -> <i4>
-    llhd.drv %hi, %w after %t : i4
+    llhd.assign %hi, %w : i4
     cf.br ^bb4
   ^bb4:
     llhd.wait (%c, %v, %w : i1, i4, i4), ^bb1
@@ -1654,7 +1666,6 @@ hw.module @FieldSlotSlicesOfDuplicateProjection(in %c : i1, in %v : i4, in %w : 
 // such process a read-modify-write driver of the whole element.
 // CHECK-LABEL: @FieldSlotPerBit
 hw.module @FieldSlotPerBit(in %g : i1) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %c0_i2 = hw.constant 0 : i2
   %c1_i2 = hw.constant 1 : i2
@@ -1662,12 +1673,12 @@ hw.module @FieldSlotPerBit(in %g : i1) {
   // CHECK: %x = llhd.sig
   // CHECK: [[B0:%.+]] = llhd.sig.extract {{%.+}} from %c0_i2 : <i3> -> <i1>
   // CHECK-NEXT: llhd.process
-  // CHECK-NOT: llhd.drv {{%.+}} : i3
-  // CHECK: llhd.drv [[B0]], {{%.+}} after {{%.+}} : i1
+  // CHECK-NOT: llhd.{{drv|assign}} {{%.+}} : i3
+  // CHECK: llhd.assign [[B0]], {{%.+}} : i1
   // CHECK: [[B1:%.+]] = llhd.sig.extract {{%.+}} from %c1_i2 : <i3> -> <i1>
   // CHECK-NEXT: llhd.process
-  // CHECK-NOT: llhd.drv {{%.+}} : i3
-  // CHECK: llhd.drv [[B1]], {{%.+}} after {{%.+}} : i1
+  // CHECK-NOT: llhd.{{drv|assign}} {{%.+}} : i3
+  // CHECK: llhd.assign [[B1]], {{%.+}} : i1
   %x = llhd.sig %init : <!hw.array<2xi3>>
   llhd.process {
     cf.br ^bb1
@@ -1678,7 +1689,7 @@ hw.module @FieldSlotPerBit(in %g : i1) {
     %old = hw.array_get %w[%false] : !hw.array<2xi3>, i1
     %bit = comb.extract %old from 0 : (i3) -> i1
     %n = comb.or %bit, %g : i1
-    llhd.drv %b, %n after %t : i1
+    llhd.assign %b, %n : i1
     llhd.wait (%g : i1), ^bb1
   }
   llhd.process {
@@ -1690,7 +1701,7 @@ hw.module @FieldSlotPerBit(in %g : i1) {
     %old = hw.array_get %w[%false] : !hw.array<2xi3>, i1
     %bit = comb.extract %old from 1 : (i3) -> i1
     %n = comb.and %bit, %g : i1
-    llhd.drv %b, %n after %t : i1
+    llhd.assign %b, %n : i1
     llhd.wait (%g : i1), ^bb1
   }
 }
@@ -1699,7 +1710,6 @@ hw.module @FieldSlotPerBit(in %g : i1) {
 // of the signal; the whole signal is promoted as before.
 // CHECK-LABEL: @NoFieldSlotOnOverlap
 hw.module @NoFieldSlotOnOverlap(in %v : i8, in %w : !hw.array<2xi8>) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %false = hw.constant false
   %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
   // CHECK: %x = llhd.sig
@@ -1708,9 +1718,9 @@ hw.module @NoFieldSlotOnOverlap(in %v : i8, in %w : !hw.array<2xi8>) {
   llhd.process {
     cf.br ^bb1
   ^bb1:
-    llhd.drv %x, %w after %t : !hw.array<2xi8>
+    llhd.assign %x, %w : !hw.array<2xi8>
     %e = llhd.sig.array_get %x[%false] : <!hw.array<2xi8>>
-    llhd.drv %e, %v after %t : i8
+    llhd.assign %e, %v : i8
     llhd.wait (%v : i8), ^bb1
   }
 }
@@ -1719,7 +1729,6 @@ hw.module @NoFieldSlotOnOverlap(in %v : i8, in %w : !hw.array<2xi8>) {
 // slots.
 // CHECK-LABEL: @NoFieldSlotForUnionMembers
 hw.module @NoFieldSlotForUnionMembers(in %v : i8, in %w : i4) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %c0 = hw.constant 0 : i8
   %init = hw.union_create "a", %c0 : !hw.union<a: i8, b: i4>
   // CHECK: %x = llhd.sig
@@ -1729,9 +1738,9 @@ hw.module @NoFieldSlotForUnionMembers(in %v : i8, in %w : i4) {
     cf.br ^bb1
   ^bb1:
     %a = llhd.sig.struct_extract %x["a"] : <!hw.union<a: i8, b: i4>>
-    llhd.drv %a, %v after %t : i8
+    llhd.assign %a, %v : i8
     %b = llhd.sig.struct_extract %x["b"] : <!hw.union<a: i8, b: i4>>
-    llhd.drv %b, %w after %t : i4
+    llhd.assign %b, %w : i4
     llhd.wait (%v, %w : i8, i4), ^bb1
   }
 }
@@ -1741,13 +1750,12 @@ hw.module @NoFieldSlotForUnionMembers(in %v : i8, in %w : i4) {
 // overlap) can still be promoted.
 // CHECK-LABEL: @LocalizeNestedProjections
 hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   %init = hw.constant 0 : i3
   %z = hw.bitcast %init : (i3) -> !hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>
   // CHECK: %u = llhd.sig
   // CHECK-NEXT: llhd.process
   // CHECK-NOT: llhd.sig.struct_extract
-  // CHECK: llhd.drv %u
+  // CHECK: llhd.assign %u
   %u = llhd.sig %z : <!hw.union<a: !hw.struct<x: i2, y: i1>, b: i3>>
   llhd.process {
     cf.br ^bb1
@@ -1756,11 +1764,11 @@ hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
     cf.cond_br %c, ^bb2, ^bb3
   ^bb2:
     %x = llhd.sig.struct_extract %a["x"] : <!hw.struct<x: i2, y: i1>>
-    llhd.drv %x, %v after %t : i2
+    llhd.assign %x, %v : i2
     cf.br ^bb4
   ^bb3:
     %y = llhd.sig.struct_extract %a["y"] : <!hw.struct<x: i2, y: i1>>
-    llhd.drv %y, %w after %t : i1
+    llhd.assign %y, %w : i1
     cf.br ^bb4
   ^bb4:
     llhd.wait (%c, %v, %w : i1, i2, i1), ^bb1
@@ -1772,23 +1780,22 @@ hw.module @LocalizeNestedProjections(in %c : i1, in %v : i2, in %w : i1) {
 // drive of the merged value.
 // CHECK-LABEL: @PortIfElse
 hw.module @PortIfElse(in %c : i1, in %a : i8, in %b : i8, in %p : !llhd.ref<i8>) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: llhd.combinational {
   llhd.combinational {
     cf.cond_br %c, ^bb1, ^bb2
   ^bb1:
     // CHECK-NOT: llhd.drv
     // CHECK: cf.br ^bb3(%a : i8)
-    llhd.drv %p, %a after %t : i8
+    llhd.assign %p, %a : i8
     cf.br ^bb3
   ^bb2:
     // CHECK-NOT: llhd.drv
     // CHECK: cf.br ^bb3(%b : i8)
-    llhd.drv %p, %b after %t : i8
+    llhd.assign %p, %b : i8
     cf.br ^bb3
   ^bb3:
     // CHECK: ^bb3([[V:%.+]]: i8):
-    // CHECK: llhd.drv %p, [[V]]
+    // CHECK: llhd.assign %p, [[V]]
     // CHECK-NEXT: llhd.yield
     llhd.yield
   }
@@ -1797,16 +1804,15 @@ hw.module @PortIfElse(in %c : i1, in %a : i8, in %b : i8, in %p : !llhd.ref<i8>)
 // Two ports may be bound to the same signal; neither is promoted.
 // CHECK-LABEL: @PortsMayAlias
 hw.module @PortsMayAlias(in %c : i1, in %a : i8, in %p : !llhd.ref<i8>, in %q : !llhd.ref<i8>) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   llhd.combinational {
     cf.cond_br %c, ^bb1, ^bb2
   ^bb1:
-    // CHECK: llhd.drv %p, %a
-    llhd.drv %p, %a after %t : i8
+    // CHECK: llhd.assign %p, %a
+    llhd.assign %p, %a : i8
     cf.br ^bb3
   ^bb2:
-    // CHECK: llhd.drv %q, %a
-    llhd.drv %q, %a after %t : i8
+    // CHECK: llhd.assign %q, %a
+    llhd.assign %q, %a : i8
     cf.br ^bb3
   ^bb3:
     llhd.yield
@@ -1818,24 +1824,23 @@ hw.module @PortsMayAlias(in %c : i1, in %a : i8, in %p : !llhd.ref<i8>, in %q : 
 // unmarked port it accesses.
 // CHECK-LABEL: @NoAliasPorts
 hw.module @NoAliasPorts(in %c : i1, in %a : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8> {llhd.noalias}, in %r : !llhd.ref<i8>) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   // CHECK: llhd.combinational {
   llhd.combinational {
     cf.cond_br %c, ^bb1, ^bb2
   ^bb1:
     // CHECK-NOT: llhd.drv
-    llhd.drv %p, %a after %t : i8
-    llhd.drv %q, %a after %t : i8
-    llhd.drv %r, %a after %t : i8
+    llhd.assign %p, %a : i8
+    llhd.assign %q, %a : i8
+    llhd.assign %r, %a : i8
     cf.br ^bb3
   ^bb2:
-    llhd.drv %q, %a after %t : i8
+    llhd.assign %q, %a : i8
     cf.br ^bb3
   ^bb3:
     // CHECK: ^bb3(
-    // CHECK-DAG: llhd.drv %p, {{%.+}} after {{%.+}} if
-    // CHECK-DAG: llhd.drv %q, %a after {{%.+}} :
-    // CHECK-DAG: llhd.drv %r, {{%.+}} after {{%.+}} if
+    // CHECK-DAG: llhd.assign %p, {{%.+}} if
+    // CHECK-DAG: llhd.assign %q, %a :
+    // CHECK-DAG: llhd.assign %r, {{%.+}} if
     // CHECK: llhd.yield
     llhd.yield
   }
@@ -1845,23 +1850,197 @@ hw.module @NoAliasPorts(in %c : i1, in %a : i8, in %p : !llhd.ref<i8> {llhd.noal
 // promoted, while the marked port is.
 // CHECK-LABEL: @NoAliasPortWithAliasedPorts
 hw.module @NoAliasPortWithAliasedPorts(in %c : i1, in %a : i8, in %p : !llhd.ref<i8> {llhd.noalias}, in %q : !llhd.ref<i8>, in %r : !llhd.ref<i8>) {
-  %t = llhd.constant_time <0ns, 0d, 1e>
   llhd.combinational {
     cf.cond_br %c, ^bb1, ^bb2
   ^bb1:
     // CHECK: ^bb1:
-    // CHECK-NEXT: llhd.drv %q, %a
-    llhd.drv %p, %a after %t : i8
-    llhd.drv %q, %a after %t : i8
+    // CHECK-NEXT: llhd.assign %q, %a
+    llhd.assign %p, %a : i8
+    llhd.assign %q, %a : i8
     cf.br ^bb3
   ^bb2:
     // CHECK: ^bb2:
-    // CHECK-NEXT: llhd.drv %r, %a
-    llhd.drv %r, %a after %t : i8
+    // CHECK-NEXT: llhd.assign %r, %a
+    llhd.assign %r, %a : i8
     cf.br ^bb3
   ^bb3:
     // CHECK: ^bb3(
-    // CHECK: llhd.drv %p, {{%.+}} after {{%.+}} if
+    // CHECK: llhd.assign %p, {{%.+}} if
     llhd.yield
+  }
+}
+
+// Constant projections whose ranges overlap are not independent, so the parent
+// signal is promoted as a whole.
+// CHECK-LABEL: @OverlappingProjectionsPromoteParent
+hw.module @OverlappingProjectionsPromoteParent(in %u: i16, in %v: i8, in %w: i8) {
+  %c0_i4 = hw.constant 0 : i4
+  %c4_i4 = hw.constant 4 : i4
+  %a = llhd.sig %u : <i16>
+  // CHECK-NOT: llhd.sig.extract
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NEXT: [[A:%.+]] = llhd.prb %a
+    // CHECK-NOT: llhd.sig.extract
+    // Bits [0, 8) and [4, 12) overlap in [4, 8).
+    %1 = llhd.sig.extract %a from %c0_i4 : <i16> -> <i8>
+    %2 = llhd.sig.extract %a from %c4_i4 : <i16> -> <i8>
+    // CHECK-NEXT: [[HI:%.+]] = comb.extract [[A]] from 8
+    // CHECK-NEXT: [[DRV1:%.+]] = comb.concat [[HI]], %v
+    llhd.assign %1, %v : i8
+    // CHECK-NEXT: [[HI:%.+]] = comb.extract [[DRV1]] from 12
+    // CHECK-NEXT: [[LO:%.+]] = comb.extract [[DRV1]] from 0
+    // CHECK-NEXT: [[DRV2:%.+]] = comb.concat [[HI]], %w, [[LO]]
+    llhd.assign %2, %w : i8
+    // CHECK-NEXT: [[PRB:%.+]] = comb.extract [[DRV2]] from 0
+    %3 = llhd.prb %1 : i8
+    // CHECK-NEXT: call @use_i8([[PRB]])
+    func.call @use_i8(%3) : (i8) -> ()
+    // CHECK-NEXT: llhd.assign %a, [[DRV2]]
+    // CHECK-NEXT: llhd.halt
+    llhd.halt
+  }
+}
+
+// A dynamic projection only forces its immediate parent to become the slot.
+// Here `%a[0]` is promoted as a whole because of the dynamic `[%i]` below it,
+// while the disjoint sibling `%a[1]` is still promoted independently.
+// CHECK-LABEL: @NestedDynamicProjectionPromotesIntermediate
+hw.module @NestedDynamicProjectionPromotesIntermediate(in %u: !hw.array<2xarray<4xi8>>, in %v: i8, in %w: !hw.array<4xi8>, in %i: i2) {
+  %false = hw.constant false
+  %true = hw.constant true
+  // CHECK: %a = llhd.sig
+  %a = llhd.sig %u : <!hw.array<2xarray<4xi8>>>
+  // CHECK-DAG: [[A0:%.+]] = llhd.sig.array_get %a[%false]
+  // CHECK-DAG: [[A1:%.+]] = llhd.sig.array_get %a[%true]
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NEXT: [[ROW:%.+]] = llhd.prb [[A0]]
+    // CHECK-NOT: llhd.sig.array_get
+    %1 = llhd.sig.array_get %a[%false] : <!hw.array<2xarray<4xi8>>>
+    %2 = llhd.sig.array_get %1[%i] : <!hw.array<4xi8>>
+    %3 = llhd.sig.array_get %a[%true] : <!hw.array<2xarray<4xi8>>>
+    // CHECK-NEXT: [[INJ:%.+]] = hw.array_inject [[ROW]][%i], %v
+    llhd.assign %2, %v : i8
+    llhd.assign %3, %w : !hw.array<4xi8>
+    %4 = llhd.prb %2 : i8
+    // CHECK-NEXT: call @use_i8(%v)
+    func.call @use_i8(%4) : (i8) -> ()
+    // CHECK-DAG: llhd.assign [[A0]], [[INJ]]
+    // CHECK-DAG: llhd.assign [[A1]], %w
+    // CHECK-NOT: llhd.assign %a,
+    // CHECK: llhd.halt
+    llhd.halt
+  }
+}
+
+// Distinct struct fields occupy disjoint bit ranges and are promoted as
+// independent slots.
+// CHECK-LABEL: @DisjointStructFieldsPromotedIndependently
+hw.module @DisjointStructFieldsPromotedIndependently(in %u: !hw.struct<x: i8, y: i8>, in %v: i8, in %w: i8) {
+  // CHECK: %a = llhd.sig
+  %a = llhd.sig %u : <!hw.struct<x: i8, y: i8>>
+  // CHECK-DAG: [[X:%.+]] = llhd.sig.struct_extract %a["x"]
+  // CHECK-DAG: [[Y:%.+]] = llhd.sig.struct_extract %a["y"]
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NOT: llhd.prb
+    // CHECK-NOT: llhd.sig.struct_extract
+    %1 = llhd.sig.struct_extract %a["x"] : <!hw.struct<x: i8, y: i8>>
+    %2 = llhd.sig.struct_extract %a["y"] : <!hw.struct<x: i8, y: i8>>
+    llhd.assign %1, %v : i8
+    llhd.assign %2, %w : i8
+    %3 = llhd.prb %1 : i8
+    %4 = llhd.prb %2 : i8
+    // CHECK-NEXT: call @use_i8(%v)
+    // CHECK-NEXT: call @use_i8(%w)
+    func.call @use_i8(%3) : (i8) -> ()
+    func.call @use_i8(%4) : (i8) -> ()
+    // CHECK-DAG: llhd.assign [[X]], %v
+    // CHECK-DAG: llhd.assign [[Y]], %w
+    // CHECK-NOT: llhd.assign %a,
+    // CHECK: llhd.halt
+    llhd.halt
+  }
+}
+
+// Union fields all alias the same storage, so the parent signal is promoted as
+// a whole.
+// CHECK-LABEL: @UnionFieldsPromoteParent
+hw.module @UnionFieldsPromoteParent(in %u: !hw.union<x: i8, y: i8>, in %v: i8) {
+  %a = llhd.sig %u : <!hw.union<x: i8, y: i8>>
+  // CHECK-NOT: llhd.sig.struct_extract
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NOT: llhd.sig.struct_extract
+    %1 = llhd.sig.struct_extract %a["x"] : <!hw.union<x: i8, y: i8>>
+    %2 = llhd.sig.struct_extract %a["y"] : <!hw.union<x: i8, y: i8>>
+    // CHECK-NEXT: [[INJ:%.+]] = hw.union_create "x", %v
+    llhd.assign %1, %v : i8
+    // CHECK-NEXT: [[Y:%.+]] = hw.union_extract [[INJ]]["y"]
+    %3 = llhd.prb %2 : i8
+    // CHECK-NEXT: call @use_i8([[Y]])
+    func.call @use_i8(%3) : (i8) -> ()
+    // CHECK-NEXT: llhd.assign %a, [[INJ]]
+    // CHECK-NEXT: llhd.halt
+    llhd.halt
+  }
+}
+
+// Disjoint projections do not help if the parent signal itself is accessed in
+// the region: the parent is promoted as a whole.
+// CHECK-LABEL: @DirectAccessPromotesParent
+hw.module @DirectAccessPromotesParent(in %u: !hw.array<4xi8>, in %v: i8, in %w: i8) {
+  %c0_i2 = hw.constant 0 : i2
+  %c1_i2 = hw.constant 1 : i2
+  %a = llhd.sig %u : <!hw.array<4xi8>>
+  // CHECK-NOT: llhd.sig.array_get
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NEXT: [[A:%.+]] = llhd.prb %a
+    // CHECK-NOT: llhd.sig.array_get
+    %1 = llhd.sig.array_get %a[%c0_i2] : <!hw.array<4xi8>>
+    %2 = llhd.sig.array_get %a[%c1_i2] : <!hw.array<4xi8>>
+    // CHECK-NEXT: [[INJ1:%.+]] = hw.array_inject [[A]][%c0_i2], %v
+    llhd.assign %1, %v : i8
+    // CHECK-NEXT: [[INJ2:%.+]] = hw.array_inject [[INJ1]][%c1_i2], %w
+    llhd.assign %2, %w : i8
+    %3 = llhd.prb %a : !hw.array<4xi8>
+    // CHECK-NEXT: call @use_array_i8([[INJ2]])
+    func.call @use_array_i8(%3) : (!hw.array<4xi8>) -> ()
+    // CHECK-NEXT: llhd.assign %a, [[INJ2]]
+    // CHECK-NEXT: llhd.halt
+    llhd.halt
+  }
+}
+
+// Blocking and delta drives to disjoint projections end up in separate slots,
+// so the mixed-delay restriction (see @MultiDelayProjectionDrive) does not
+// apply and both are promoted.
+// CHECK-LABEL: @MixedDelaysOnDisjointSlots
+hw.module @MixedDelaysOnDisjointSlots(in %v: i8, in %w: i8) {
+  %delta = llhd.constant_time <0ns, 1d>
+  %false = hw.constant false
+  %true = hw.constant true
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  // CHECK: %a = llhd.sig
+  %a = llhd.sig %init : <!hw.array<2xi8>>
+  // CHECK-DAG: [[A0:%.+]] = llhd.sig.array_get %a[%false]
+  // CHECK-DAG: [[A1:%.+]] = llhd.sig.array_get %a[%true]
+  // CHECK: llhd.process {
+  llhd.process {
+    // CHECK-NOT: llhd.prb
+    // CHECK-NOT: llhd.sig.array_get
+    %1 = llhd.sig.array_get %a[%false] : <!hw.array<2xi8>>
+    %2 = llhd.sig.array_get %a[%true] : <!hw.array<2xi8>>
+    llhd.assign %1, %v : i8
+    llhd.drv %2, %w after %delta : i8
+    %3 = llhd.prb %1 : i8
+    // CHECK-NEXT: call @use_i8(%v)
+    func.call @use_i8(%3) : (i8) -> ()
+    // CHECK-DAG: llhd.drv [[A1]], %w after
+    // CHECK-DAG: llhd.assign [[A0]], %v : i8
+    // CHECK: llhd.halt
+    llhd.halt
   }
 }

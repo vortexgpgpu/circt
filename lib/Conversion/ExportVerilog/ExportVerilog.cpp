@@ -293,6 +293,10 @@ static void getTypeDims(
 
   if (auto inout = hw::type_dyn_cast<InOutType>(type))
     return getTypeDims(dims, inout.getElementType(), loc, errorHandler);
+  if (auto net = dyn_cast<sv::NetType>(type))
+    return getTypeDims(dims, net.getElementType(), loc, errorHandler);
+  if (auto var = dyn_cast<sv::VarType>(type))
+    return getTypeDims(dims, var.getElementType(), loc, errorHandler);
   if (auto uarray = hw::type_dyn_cast<hw::UnpackedArrayType>(type))
     return getTypeDims(dims, uarray.getElementType(), loc, errorHandler);
   if (auto uarray = hw::type_dyn_cast<sv::UnpackedOpenArrayType>(type))
@@ -363,8 +367,8 @@ static Type stripUnpackedTypes(Type type) {
 
 /// Return true if the type has a leading unpacked type.
 static bool hasLeadingUnpackedType(Type type) {
-  assert(isa<hw::InOutType>(type) && "inout type is expected");
-  auto elementType = cast<hw::InOutType>(type).getElementType();
+  auto elementType = sv::getHandleElementType(type);
+  assert(elementType && "inout or SV handle type is expected");
   return stripUnpackedTypes(elementType) != elementType;
 }
 
@@ -1000,7 +1004,7 @@ StringRef getVerilogValueName(Value val) {
 
   if (auto port = dyn_cast<BlockArgument>(val)) {
     // If the value is defined by for op, use its associated verilog name.
-    auto parent = port.getParentBlock()->getParentOp();
+    auto *parent = port.getParentBlock()->getParentOp();
     if (isa<ForOp, GenerateForOp>(parent))
       return parent->getAttrOfType<StringAttr>("hw.verilogName");
     return getInputPortVerilogName(port.getParentBlock()->getParentOp(),
@@ -1785,8 +1789,8 @@ static bool printPackedTypeImpl(Type type, raw_ostream &os, Location loc,
                                    emitter, /*optionalAliasType=*/{},
                                    emitAsTwoStateType);
       })
-      .Case<InOutType>([&](InOutType inoutType) {
-        return printPackedTypeImpl(inoutType.getElementType(), os, loc, dims,
+      .Case<InOutType, sv::NetType, sv::VarType>([&](auto handleType) {
+        return printPackedTypeImpl(handleType.getElementType(), os, loc, dims,
                                    implicitIntType, singleBitDefaultType,
                                    emitter, /*optionalAliasType=*/{},
                                    emitAsTwoStateType);
@@ -1958,7 +1962,7 @@ bool ModuleEmitter::printPackedType(Type type, raw_ostream &os, Location loc,
 // NOLINTBEGIN(misc-no-recursion)
 void ModuleEmitter::printUnpackedTypePostfix(Type type, raw_ostream &os) {
   TypeSwitch<Type, void>(type)
-      .Case<InOutType, VarType>([&](auto valueType) {
+      .Case<InOutType, NetType, VarType>([&](auto valueType) {
         printUnpackedTypePostfix(valueType.getElementType(), os);
       })
       .Case<UnpackedArrayType>([&](UnpackedArrayType arrayType) {
@@ -2773,6 +2777,13 @@ SubExprInfo ExprEmitter::emitSubExpr(Value exp,
 }
 
 SubExprInfo ExprEmitter::visitComb(ReplicateOp op) {
+  // The replication operator is unsupported in some tools, so expand it
+  // into an explicit concatenation when requested.
+  if (state.options.disallowReplicate) {
+    emitBracedList(SmallVector<Value>(op.getMultiple(), op.getOperand()));
+    return {Symbol, IsUnsigned};
+  }
+
   auto openFn = [&]() {
     ps << "{";
     ps.addAsString(op.getMultiple());
@@ -3744,6 +3755,9 @@ private:
   EmittedProperty visitLTL(ltl::ImplicationOp op);
   EmittedProperty visitLTL(ltl::UntilOp op);
   EmittedProperty visitLTL(ltl::EventuallyOp op);
+  EmittedProperty visitLTL(ltl::AcceptOnOp op);
+  EmittedProperty emitAcceptRejectOn(StringRef mnemonic, Value condition,
+                                     Value input);
   EmittedProperty visitLTL(ltl::ClockOp op);
   EmittedProperty visitLTL(ltl::WeakOp op);
   EmittedProperty visitLTL(ltl::StrongOp op);
@@ -4033,6 +4047,13 @@ EmittedProperty PropertyEmitter::visitLTL(ltl::NonConsecutiveRepeatOp op) {
 }
 
 EmittedProperty PropertyEmitter::visitLTL(ltl::NotOp op) {
+  // Emit `not(accept_on(not(X), c))` as `reject_on (c) X` by duality, and
+  // likewise for the `sync` variants.
+  if (auto accept = op.getInput().getDefiningOp<ltl::AcceptOnOp>())
+    if (auto innerNot = accept.getInput().getDefiningOp<ltl::NotOp>())
+      return emitAcceptRejectOn(accept.getSync() ? "sync_reject_on"
+                                                 : "reject_on",
+                                accept.getCondition(), innerNot.getInput());
   // Emit `not (s_eventually X)` as `always ...` by duality, pulling the
   // quantifier to the top and cancelling any inner negation.
   if (auto ev = op.getInput().getDefiningOp<ltl::EventuallyOp>()) {
@@ -4092,6 +4113,24 @@ EmittedProperty PropertyEmitter::visitLTL(ltl::EventuallyOp op) {
   ps << "s_eventually" << PP::space;
   emitNestedProperty(op.getInput(), PropertyPrecedence::Qualifier);
   return {PropertyPrecedence::Qualifier};
+}
+
+EmittedProperty PropertyEmitter::emitAcceptRejectOn(StringRef mnemonic,
+                                                    Value condition,
+                                                    Value input) {
+  ps << mnemonic << PP::nbsp << "(";
+  ps.scopedBox(PP::ibox0, [&] {
+    emitNestedProperty(condition, PropertyPrecedence::Lowest);
+    ps << ")";
+  });
+  ps << PP::space;
+  emitNestedProperty(input, PropertyPrecedence::Qualifier);
+  return {PropertyPrecedence::Qualifier};
+}
+
+EmittedProperty PropertyEmitter::visitLTL(ltl::AcceptOnOp op) {
+  return emitAcceptRejectOn(op.getSync() ? "sync_accept_on" : "accept_on",
+                            op.getCondition(), op.getInput());
 }
 
 EmittedProperty PropertyEmitter::visitLTL(ltl::ClockOp op) {
@@ -4254,6 +4293,7 @@ private:
                       PPExtString postSyntax = PPExtString(";"),
                       std::optional<PPExtString> wordBeforeLHS = std::nullopt);
   LogicalResult visitSV(AssignOp op);
+  LogicalResult visitSV(VarAssignOp op);
   LogicalResult visitSV(BPAssignOp op);
   LogicalResult visitSV(PAssignOp op);
   LogicalResult visitSV(ForceOp op);
@@ -4466,6 +4506,13 @@ LogicalResult StmtEmitter::visitSV(AssignOp op) {
   if (emitter.assignsInlined.count(op))
     return success();
 
+  // Emit SV attributes. See Spec 12.3.
+  emitSVAttributes(op);
+
+  return emitAssignLike(op, PPExtString("="), PPExtString("assign"));
+}
+
+LogicalResult StmtEmitter::visitSV(VarAssignOp op) {
   // Emit SV attributes. See Spec 12.3.
   emitSVAttributes(op);
 
@@ -6777,6 +6824,16 @@ void ModuleEmitter::emitPortList(Operation *module,
   if (maxTypeWidth > 0) // add a space if any type exists
     maxTypeWidth += 1;
 
+  auto getPortSVAttrs = [](const PortInfo &port) -> ArrayAttr {
+    if (!port.attrs)
+      return {};
+    auto attrs = port.attrs.getAs<ArrayAttr>(
+        sv::SVAttributeAttr::getSVAttributesAttrName());
+    if (!attrs || attrs.empty())
+      return {};
+    return attrs;
+  };
+
   // Emit the port list.
   ps.scopedBox(PP::bbox2, [&]() {
     for (size_t portIdx = 0, e = portInfo.size(); portIdx != e;) {
@@ -6797,6 +6854,13 @@ void ModuleEmitter::emitPortList(Operation *module,
 
       // Emit the port direction and optional wire keyword.
       auto thisPortInfo = portInfo.at(portIdx);
+      auto svAttrs = getPortSVAttrs(thisPortInfo);
+      if (svAttrs && !isZeroWidth) {
+        emitSVAttributesImpl(ps, svAttrs, /*mayBreak=*/false);
+        ps << PP::newline;
+        if (hasZeroWidth)
+          ps << "   ";
+      }
       auto thisPortDirection = thisPortInfo.dir;
       bool isInOut = isa<InOutType, sv::NetType>(portType);
       StringRef direction;
@@ -6812,15 +6876,26 @@ void ModuleEmitter::emitPortList(Operation *module,
           break;
         }
       }
-      StringRef wire = state.options.emitWireInPorts ? "wire " : "";
-      size_t startOfNamePos = direction.size() + wire.size() + maxTypeWidth;
+      StringRef portDecl;
+      switch (state.options.emitPortType) {
+      case circt::LoweringOptions::EmitPortType::emitWire:
+        portDecl = "wire ";
+        break;
+      case circt::LoweringOptions::EmitPortType::emitVarLogic:
+        if (!hasExplicitDataType(portType))
+          portDecl = emitAsTwoStateType ? "var " : "var logic ";
+        break;
+      case circt::LoweringOptions::EmitPortType::emitNone:
+        break;
+      }
+      size_t startOfNamePos = direction.size() + portDecl.size() + maxTypeWidth;
       // Modport-typed ports (e.g., MyBundle.sink) already encode their
       // direction in the interface modport definition, so we suppress the
       // direction and wire keywords for them.
       if (!isa<ModportType>(portType)) {
         ps << direction;
-        if (!wire.empty())
-          ps << wire;
+        if (!portDecl.empty())
+          ps << portDecl;
         if (!portTypeStrings[portIdx].empty())
           ps << portTypeStrings[portIdx];
         if (portTypeStrings[portIdx].size() < maxTypeWidth)
@@ -6865,8 +6940,9 @@ void ModuleEmitter::emitPortList(Operation *module,
       // kind of check is important because two ports can share a direction and
       // an (unwrapped) element type, emitting completely different keywords.
       // Thus we must ensure they are not folded into one shared declaration.
-      if (!state.options.disallowPortDeclSharing) {
-        while (portIdx != e && portInfo.at(portIdx).dir == thisPortDirection &&
+      if (!state.options.disallowPortDeclSharing && !svAttrs) {
+        while (portIdx != e && !getPortSVAttrs(portInfo.at(portIdx)) &&
+               portInfo.at(portIdx).dir == thisPortDirection &&
                isInOut ==
                    isa<InOutType, sv::NetType>(portInfo.at(portIdx).type) &&
                stripUnpackedTypes(portType) ==

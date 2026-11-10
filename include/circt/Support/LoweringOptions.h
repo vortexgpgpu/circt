@@ -128,6 +128,11 @@ struct LoweringOptions {
   /// If true, every mux expression is spilled to a wire.
   bool disallowMuxInlining = false;
 
+  /// If true, expand `comb.replicate` into an explicit concatenation instead
+  /// of emitting the `{N{...}}` replication operator (unsupported in some
+  /// tools).
+  bool disallowReplicate = false;
+
   /// This controls extra wire spilling performed in PrepareForEmission to
   /// improve readablitiy and debuggability.
   enum WireSpillingHeuristic : unsigned {
@@ -156,9 +161,20 @@ struct LoweringOptions {
   /// into the array index.
   bool mitigateVivadoArrayIndexConstPropBug = false;
 
-  /// If true, emit `wire` in port lists rather than nothing. Used in cases
-  /// where `default_nettype is not set to wire.
-  bool emitWireInPorts = false;
+  /// Controls the port declaration syntax for module ports.
+  ///
+  /// - emitVarLogic: Emits `var logic` in the port lists rather than nothing,
+  /// i.e., default plain (non-handle) ports to a variable (`input var logic
+  /// ...`, `output var logic ...`).
+  /// - emitWire: Emits 'wire' in port lists rather than nothing. Used in cases
+  /// where `default_nettype` is not set to wire.
+  /// - emitNone: Omits both `var logic` and `wire` in port lists; relies
+  /// on standard SystemVerilog implicit net-kind port declaration.
+  enum class EmitPortType {
+    emitVarLogic,
+    emitWire,
+    emitNone,
+  } emitPortType = EmitPortType::emitNone;
 
   /// If true, emit a comment wherever an instance wasn't printed, because
   /// it's emitted elsewhere as a bind.

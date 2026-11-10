@@ -94,6 +94,9 @@ The current set of "tool capability" Lowering Options is:
  * `disallowDeclAssignments` (default=`false`). If true, always emit assignments
    (both continuous and blocking) separately rather than inlining them in net and
    variable declarations.
+ * `disallowReplicate` (default=`false`). If true, expand `comb.replicate` into
+   an explicit concatenation instead of emitting the `{N{...}}` replication
+   operator (unsupported in some tools).
 
 The current set of "style" Lowering Options is:
 
@@ -126,9 +129,15 @@ The current set of "style" Lowering Options is:
      with meaningful namehints (i.e. names which start with "\_") are spilled to wires.
      For a namehint with "\_" prefix, if the term size is greater than `wireSpillingNamehintTermLimit`
      (default=3), then the expression is spilled.
- * `emitWireInPorts` (default=`false`). Emits `wire` in port lists rather than
-   relying on 'default_nettype'. For instance, instead of `input a` this option
-   would emit that port as `input wire a`.
+ * `svPortDeclStyle` (default=`none`). Controls the port declaration syntax
+ for module ports.
+   * `emitVarLogic`: Emits `var logic` in the port lists rather than nothing,
+   i.e., default plain (non-handle) ports to a variable (`input var logic ...`,
+   `output var logic ...`)
+   * `emitWire`: Emits `wire` in port lists rather than nothing. Used in cases
+   where `default_nettype` is not set to wire. For instance, instead of `input a` this option would emit that port as `input wire a`.
+   * `emitNone`: Omits both `var logic` and `wire` in port lists; relies 
+   on standard SystemVerilog implicit net-kind port declaration.
  * `emitBindComments` (default=`false`). Emits a comment wherever an instance or
    interface instance is not printed, because it was emitted as a bind elsewhere.
  * `omitVersionComment` (default=`false`). Avoids emitting a version comment
@@ -166,8 +175,12 @@ depending on the target you may use, you'll need to manually specify the
 appropriate options. Please refer [ToolsWorkarounds](./ToolsWorkarounds.md)
 for the more details of each issue.
 
+### OpenSTA / OpenROAD
+For OpenSTA/OpenROAD, use `disallowReplicate`: the `{N{...}}` replication
+operator is unsupported as of OpenSTA 3.0.0.
+
 ### Questa
-For Questa, we recommend using the `emitWireInPorts` option. This option is
+For Questa, we recommend using the `svPortDeclStyle=wire` option. This option is
 helpful because Questa emits warnings when ports do not have net types such as
 `wire`, `reg`, or `logic`.
 

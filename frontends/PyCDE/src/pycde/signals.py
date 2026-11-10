@@ -244,7 +244,7 @@ class ClockSignal(Signal):
     return BitsSignal(clk_i1, Bits(1))
 
 
-class InOutSignal(Signal):
+class SVHandleSignal(Signal):
   # Maintain a caching of the read value.
   read_value = None
 
@@ -253,6 +253,18 @@ class InOutSignal(Signal):
     if self.read_value is None:
       self.read_value = _FromCirctValue(sv.ReadInOutOp.create(self).results[0])
     return self.read_value
+
+
+class InOutSignal(SVHandleSignal):
+  pass
+
+
+class NetSignal(SVHandleSignal):
+  pass
+
+
+class VarSignal(SVHandleSignal):
+  pass
 
 
 def _validate_idx(size: int, idx: Union[int, BitVectorSignal]):
@@ -861,8 +873,7 @@ class ChannelSignal(Signal):
         raise ValueError(
             "ValidReady channels require a 'ready' signal to unwrap.")
       ready = Bit(readyOrRden)
-      unwrap_op = esi.UnwrapValidReadyOp(self.type.inner_type, Bit, self.value,
-                                         ready.value)
+      unwrap_op = esi.UnwrapValidReadyOp(self.value, ready.value)
       return unwrap_op[0], unwrap_op[1]
     elif signaling == ChannelSignaling.FIFO:
       if readyOrRden is None:
@@ -882,16 +893,21 @@ class ChannelSignal(Signal):
       reset: BitsSignal,
       stages: int,
       output_signaling: Optional[ChannelSignaling] = None,
+      output_data_delay: Optional[int] = None,
   ) -> ChannelSignal:
     """Insert a channel buffer with `stages` stages on the channel. Return the
-    output of that buffer."""
+    output of that buffer. The output signaling and data delay default to those
+    of the input channel."""
     from .types import Channel
 
-    if output_signaling is None:
+    if output_signaling is None and output_data_delay is None:
       res_type = self.type
     else:
-      inner_type = self.type.inner
-      res_type = Channel(inner_type, output_signaling, self.type.data_delay)
+      if output_signaling is None:
+        output_signaling = self.type.signaling
+      if output_data_delay is None:
+        output_data_delay = self.type.data_delay
+      res_type = Channel(self.type.inner, output_signaling, output_data_delay)
 
     from .dialects import esi
     return ChannelSignal(

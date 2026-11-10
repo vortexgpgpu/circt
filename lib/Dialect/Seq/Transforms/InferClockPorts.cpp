@@ -240,7 +240,7 @@ void InferClockPortsPass::rewriteModule(hw::HWModuleOp module) {
     retype(body->getArgument(input), builder);
   for (auto [instance, target] : instances) {
     builder.setInsertionPointAfter(instance);
-    // Keep the looked-up copy alive: `set_bits()` only references it.
+    // Copy: `lookup` returns by value, so iterating its temporary would dangle.
     BitVector targetOutputs = clockOutputs.lookup(target);
     for (unsigned output : targetOutputs.set_bits())
       retype(instance.getResult(output), builder);

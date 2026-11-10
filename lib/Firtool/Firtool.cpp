@@ -20,8 +20,8 @@
 #include "mlir/Transforms/Passes.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
-using namespace llvm;
 using namespace circt;
 
 LogicalResult firtool::populatePreprocessTransforms(mlir::PassManager &pm,
@@ -101,11 +101,8 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
 
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createDropConst());
 
-  if (opt.shouldDedup()) {
-    firrtl::DedupOptions opts;
-    opts.dedupClasses = opt.shouldDedupClasses();
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createDedup(opts));
-  }
+  if (opt.shouldDedup())
+    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createDedup());
 
   if (opt.shouldConvertVecOfBundle()) {
     pm.addNestedPass<firrtl::CircuitOp>(firrtl::createLowerFIRRTLTypes(
@@ -237,10 +234,6 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
       firrtl::createMergeConnections(
           {/*enableAggressiveMergin=*/!opt
                .shouldDisableAggressiveMergeConnections()}));
-
-  if (!opt.shouldDisableOptimization())
-    pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
-        firrtl::createVectorization());
 
   return success();
 }
@@ -564,7 +557,7 @@ public:
 
   llvm::cl::opt<bool> disableLayerSink{"disable-layer-sink",
                                        llvm::cl::desc("Disable layer sink"),
-                                       cl::init(false)};
+                                       llvm::cl::init(false)};
 
   llvm::cl::opt<bool> disableOptimization{
       "disable-opt",
@@ -583,9 +576,12 @@ public:
 
   llvm::cl::opt<bool> dedupClasses{
       "dedup-classes",
-      llvm::cl::desc(
-          "Deduplicate FIRRTL classes, violating their nominal typing"),
-      llvm::cl::init(true)};
+      llvm::cl::desc("Deprecated; classes are never deduplicated"),
+      llvm::cl::init(false), llvm::cl::callback([](const bool &value) {
+        if (value)
+          llvm::errs() << "warning: --dedup-classes is deprecated and ignored; "
+                          "classes are never deduplicated\n";
+      })};
 
   llvm::cl::opt<firrtl::CompanionMode> companionMode{
       "grand-central-companion-mode",
@@ -870,13 +866,12 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
       preserveMode(firrtl::PreserveValues::None), enableDebugInfo(false),
       buildMode(BuildModeRelease), disableLayerSink(false),
       disableOptimization(false), vbToBV(false), noDedup(false),
-      dedupClasses(true), companionMode(firrtl::CompanionMode::Bind),
-      noViews(false), disableAggressiveMergeConnections(false),
-      lowerMemories(false), blackBoxRootPath(""), replSeqMem(false),
-      replSeqMemFile(""), ignoreReadEnableMem(false),
-      disableRandom(RandomKind::None), outputAnnotationFilename(""),
-      enableAnnotationWarning(false), warnOnTruncation(false),
-      lowerToCore(false), addMuxPragmas(false),
+      companionMode(firrtl::CompanionMode::Bind), noViews(false),
+      disableAggressiveMergeConnections(false), lowerMemories(false),
+      blackBoxRootPath(""), replSeqMem(false), replSeqMemFile(""),
+      ignoreReadEnableMem(false), disableRandom(RandomKind::None),
+      outputAnnotationFilename(""), enableAnnotationWarning(false),
+      warnOnTruncation(false), lowerToCore(false), addMuxPragmas(false),
       verificationFlavor(firrtl::VerificationFlavor::None),
       emitSeparateAlwaysBlocks(false),
       addVivadoRAMAddressConflictSynthesisBugWorkaround(false),
@@ -905,7 +900,6 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
   disableOptimization = clOptions->disableOptimization;
   vbToBV = clOptions->vbToBV;
   noDedup = clOptions->noDedup;
-  dedupClasses = clOptions->dedupClasses;
   companionMode = clOptions->companionMode;
   noViews = clOptions->noViews;
   disableAggressiveMergeConnections =

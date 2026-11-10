@@ -218,7 +218,9 @@ def ModportDirection : I32EnumAttr<"ModportDirection",
 }
 
 def ModportDirectionAttr : EnumAttr<SVDialect, ModportDirection,
-  "modport_direction">;
+  "modport_direction"> {
+  let assemblyFormat = "$value";
+}
 
 class SV_Attr<string attrName, string attrMnemonic, list<Trait> traits = []>
     : AttrDef<SVDialect, attrName, traits> {
@@ -416,7 +418,7 @@ def InterfaceInstanceOp : SVOp<"interface.instance", [
 
   let builders = [
     OpBuilder<(ins "::mlir::Type":$result), [{
-      return build($_builder, $_state, result, mlir::ValueRange());
+      $_state.addTypes(result);
     }]>
   ];
 

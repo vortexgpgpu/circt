@@ -582,6 +582,8 @@ void CircuitLoweringState::processRemainingAnnotations(
             // This annotation is used to mark which external modules are
             // imported blackboxes from the BlackBoxReader pass.
             blackBoxAnnoClass,
+            // This annotation is consumed when lowering verbatim extmodules.
+            verbatimBlackBoxAnnoClass,
             // This annotation is used by several GrandCentral passes.
             extractGrandCentralAnnoClass,
             // The following will be handled while lowering the verification
@@ -1978,6 +1980,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitExpr(LTLImplicationIntrinsicOp op);
   LogicalResult visitExpr(LTLUntilIntrinsicOp op);
   LogicalResult visitExpr(LTLEventuallyIntrinsicOp op);
+  LogicalResult visitExpr(LTLAcceptOnIntrinsicOp op);
   LogicalResult visitExpr(LTLPastIntrinsicOp op);
   LogicalResult visitExpr(LTLClockIntrinsicOp op);
 
@@ -3189,7 +3192,7 @@ Backedge FIRRTLLowering::createBackedge(Value orig, Type type) {
 /// If the `from` value is in fact a backedge, record that the backedge will
 /// be replaced by the value.  Return true if the destination is a backedge.
 bool FIRRTLLowering::updateIfBackedge(Value dest, Value src) {
-  auto backedgeIt = backedges.find(dest);
+  auto *backedgeIt = backedges.find(dest);
   if (backedgeIt == backedges.end())
     return false;
   backedgeIt->second = src;
@@ -3564,7 +3567,7 @@ LogicalResult FIRRTLLowering::visitExpr(SubaccessOp op) {
 LogicalResult FIRRTLLowering::visitExpr(SubfieldOp op) {
   // firrtl.mem lowering lowers some SubfieldOps.  Zero-width can leave
   // invalid subfield accesses
-  if (getLoweredValue(op) || !op.getInput())
+  if (getLoweredValue(op) || op->getNumOperands() == 0)
     return success();
 
   if (isZeroBitFIRRTLType(op.getType()))
@@ -4833,6 +4836,12 @@ LogicalResult FIRRTLLowering::visitExpr(LTLUntilIntrinsicOp op) {
 LogicalResult FIRRTLLowering::visitExpr(LTLEventuallyIntrinsicOp op) {
   return setLoweringToLTL<ltl::EventuallyOp>(op,
                                              getLoweredValue(op.getInput()));
+}
+
+LogicalResult FIRRTLLowering::visitExpr(LTLAcceptOnIntrinsicOp op) {
+  return setLoweringToLTL<ltl::AcceptOnOp>(op, getLoweredValue(op.getInput()),
+                                           getLoweredValue(op.getCondition()),
+                                           op.getSyncAttr());
 }
 
 LogicalResult FIRRTLLowering::visitExpr(LTLPastIntrinsicOp op) {

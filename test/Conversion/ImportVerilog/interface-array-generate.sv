@@ -21,8 +21,8 @@ endmodule
 // CHECK-LABEL: moore.module @top(
 // CHECK: %[[B0:.*]] = moore.variable : <l1>
 // CHECK: %[[B1:.*]] = moore.variable {{.*}} : <l1>
-// CHECK: %[[V0:.*]] = moore.read %[[B0]] : <l1>
-// CHECK: %[[V1:.*]] = moore.read %[[B1]] : <l1>
+// CHECK: %[[V0:.*]] = moore.read %[[B0]] : ref<l1>
+// CHECK: %[[V1:.*]] = moore.read %[[B1]] : ref<l1>
 // CHECK: moore.instance "c" @child(intfs_0_base: %[[V0]]: !moore.l1, intfs_1_base: %[[V1]]: !moore.l1)
 module top(output logic y);
   bus b[2]();
@@ -39,11 +39,11 @@ endinterface
 // GEN-LABEL: moore.module private @gen_child(
 // GEN-SAME: in %intfs_0_base : !moore.ref<l1>, in %intfs_1_base : !moore.ref<l1>
 // GEN: %[[X0:.*]] = moore.extract %x from 0 : l2 -> l1
-// GEN: moore.assign %intfs_0_base, %[[X0]] : l1
-// GEN: moore.read %intfs_0_base : <l1>
+// GEN: moore.assign %intfs_0_base, %[[X0]] : ref<l1>
+// GEN: moore.read %intfs_0_base : ref<l1>
 // GEN: %[[X1:.*]] = moore.extract %x from 1 : l2 -> l1
-// GEN: moore.assign %intfs_1_base, %[[X1]] : l1
-// GEN: moore.read %intfs_1_base : <l1>
+// GEN: moore.assign %intfs_1_base, %[[X1]] : ref<l1>
+// GEN: moore.read %intfs_1_base : ref<l1>
 module gen_child(gen_bus.bidir intfs[2], input logic [1:0] x,
                  output logic [1:0] y);
   for (genvar i = 0; i < 2; i++) begin : g

@@ -578,7 +578,7 @@ static void addProcessLowering(OpPassManager &pm, bool sroa,
   // Simplify module-level signals.
   auto &signalPM = pm.nest<hw::HWModuleOp>();
   signalPM.addPass(llhd::createCombineDrivesPass());
-  signalPM.addPass(llhd::createSig2Reg());
+  signalPM.addPass(llhd::createSig2RegPass());
   signalPM.addPass(mlir::createCSEPass());
   signalPM.addPass(mlir::createCanonicalizerPass());
 
