@@ -112,6 +112,61 @@ static IntegerAttr getConstantBits(Value value) {
       IntegerType::get(value.getContext(), bits.getBitWidth()), bits);
 }
 
+/// The bits a signal's constant initializer gives to `ref`, the signal itself
+/// or a projection of it with constant positions (a struct field, an array
+/// element, a bit range), or null. Struct fields lie first field highest, array
+/// elements element 0 lowest, as hw aggregates are laid out in bits.
+static IntegerAttr getInitBits(Value ref) {
+  if (auto sigOp = ref.getDefiningOp<llhd::SignalOp>())
+    return sigOp.getInit() ? getConstantBits(sigOp.getInit()) : IntegerAttr();
+  uint64_t offset = 0;
+  // A projection: find the root's bits, then this part's offset in them.
+  Value cur = ref;
+  while (!cur.getDefiningOp<llhd::SignalOp>()) {
+    auto *op = cur.getDefiningOp();
+    if (!op)
+      return {};
+    if (auto get = dyn_cast<llhd::SigArrayGetOp>(op)) {
+      IntegerAttr index;
+      if (!matchPattern(get.getIndex(), m_Constant(&index)))
+        return {};
+      auto elemWidth = hw::getBitWidth(get.getResult().getType().getNestedType());
+      if (elemWidth < 0)
+        return {};
+      offset += index.getValue().getZExtValue() * elemWidth;
+      cur = get.getInput();
+    } else if (auto ext = dyn_cast<llhd::SigStructExtractOp>(op)) {
+      auto structTy = hw::type_dyn_cast<hw::StructType>(ext.getInput().getType().getNestedType());
+      if (!structTy)
+        return {}; // a union's members overlap
+      uint64_t below = 0;
+      bool after = false;
+      for (auto field : structTy.getElements()) {
+        if (after)
+          below += hw::getBitWidth(field.type);
+        if (field.name == ext.getFieldAttr())
+          after = true;
+      }
+      offset += below;
+      cur = ext.getInput();
+    } else if (auto ext = dyn_cast<llhd::SigExtractOp>(op)) {
+      IntegerAttr low;
+      if (!matchPattern(ext.getLowBit(), m_Constant(&low)))
+        return {};
+      offset += low.getValue().getZExtValue();
+      cur = ext.getInput();
+    } else {
+      return {};
+    }
+  }
+  auto rootBits = getInitBits(cur);
+  auto width = hw::getBitWidth(cast<llhd::RefType>(ref.getType()).getNestedType());
+  if (!rootBits || width <= 0 || offset + width > rootBits.getValue().getBitWidth())
+    return {};
+  APInt part = rootBits.getValue().lshr(offset).trunc(width);
+  return IntegerAttr::get(IntegerType::get(ref.getContext(), width), part);
+}
+
 /// Convert a value into a (base, fieldID, bitID, bitWidth) key.
 ///
 /// - `fieldID == 0` denotes the whole value.
@@ -1411,6 +1466,10 @@ static LogicalResult inferRegisterPreset(seq::FirRegOp regOp,
     if (!matchPattern(sigOp.getInit(), m_Constant(&preset)))
       return sigOp->emitError("cannot lower a nonconstant signal initializer "
                               "to a register preset");
+  } else if (!sigOp) {
+    // A part of a signal (a field, an element, a bit range): its share of the
+    // signal's constant initializer.
+    preset = getInitBits(drive.op.getSignal());
   }
 
   if (preset)
@@ -1533,11 +1592,10 @@ LogicalResult Deseq::implementRegister(DriveInfo &drive) {
   // which also considers constant drives concurrent with the register's.
   StringAttr name;
   IntegerAttr preset;
-  if (auto sigOp = drive.op.getSignal().getDefiningOp<llhd::SignalOp>()) {
+  if (auto sigOp = drive.op.getSignal().getDefiningOp<llhd::SignalOp>())
     name = sigOp.getNameAttr();
-    if (sigOp.getInit() && !isa<IntegerType>(sigOp.getInit().getType()))
-      preset = getConstantBits(sigOp.getInit());
-  }
+  if (!isa<IntegerType>(cast<llhd::RefType>(drive.op.getSignal().getType()).getNestedType()))
+    preset = getInitBits(drive.op.getSignal());
 
   // The register holds the signal, or a part of it the process drives (one
   // `always` block per bit of a vector): it is named after the signal and

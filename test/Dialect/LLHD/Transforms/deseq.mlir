@@ -1308,7 +1308,8 @@ hw.module @ClockExtractedFromAliasedStructExtractPosEdge(in %st: !hw.typealias<@
 
 // Registers for the bits of a signal, one process per bit (Vortex
 // VX_reset_relay's copies of a reset that bound its fanout), are named after
-// the signal and carry its synthesis attributes. A `keep` request gives each an
+// the signal, carry its synthesis attributes and their share of its
+// initializer as preset. A `keep` request gives each an
 // inner symbol, so that the identical copies are not merged.
 // CHECK-LABEL: @KeepRegisterCopies(
 hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
@@ -1321,7 +1322,7 @@ hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
   %c0_i2 = hw.constant 0 : i2
   %lo_bit = hw.constant 0 : i1
   %hi_bit = hw.constant 1 : i1
-  // CHECK: seq.firreg %d clock {{%.+}} sym @r {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @r preset 0 {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
   %1, %2 = llhd.process -> i1, i1 {
     cf.br ^bb1(%c0_i1, %false : i1, i1)
   ^bb1(%3: i1, %4: i1):
@@ -1333,7 +1334,7 @@ hw.module @KeepRegisterCopies(in %clock: i1, in %d: i1) {
   }
   %lo = llhd.sig.extract %r from %lo_bit : <i2> -> <i1>
   llhd.drv %lo, %1 after %0 if %2 : i1
-  // CHECK: seq.firreg %d clock {{%.+}} sym @r_0 {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
+  // CHECK: seq.firreg %d clock {{%.+}} sym @r_0 preset 0 {name = "r", sv.attributes = [#sv.attribute<"keep" = "\22true\22">]} : i1
   %8, %9 = llhd.process -> i1, i1 {
     cf.br ^bb1(%c0_i1, %false : i1, i1)
   ^bb1(%3: i1, %4: i1):
@@ -1401,4 +1402,28 @@ hw.module @FalseInitialDrives(in %clock: i1, in %d: i42, in %c: i1) {
   llhd.assign %3, %c123_i42 if %c : i42
   // Don't initialize from drive at different time
   llhd.drv %3, %c123_i42 after %0 : i42
+}
+
+// A struct field register takes its share of the signal's constant
+// initializer as preset (field `a` of {a: 3, b: 7}, first field highest).
+// CHECK-LABEL: @FieldPreset(
+hw.module @FieldPreset(in %clock: i1, in %d: i4) {
+  %false = hw.constant false
+  %true = hw.constant true
+  %c0_i4 = hw.constant 0 : i4
+  %0 = llhd.constant_time <0ns, 1d>
+  %init = hw.aggregate_constant [3 : i4, 7 : i4] : !hw.struct<a: i4, b: i4>
+  %s = llhd.sig %init : <!hw.struct<a: i4, b: i4>>
+  // CHECK: seq.firreg %d clock {{%.+}} preset 3 {name = "s"} : i4
+  %1, %2 = llhd.process -> i4, i1 {
+    cf.br ^bb1(%c0_i4, %false : i4, i1)
+  ^bb1(%3: i4, %4: i1):
+    llhd.wait yield (%3, %4 : i4, i1), (%clock : i1), ^bb2(%clock : i1)
+  ^bb2(%5: i1):
+    %6 = comb.xor bin %5, %true : i1
+    %7 = comb.and bin %6, %clock : i1
+    cf.cond_br %7, ^bb1(%d, %true : i4, i1), ^bb1(%c0_i4, %false : i4, i1)
+  }
+  %a = llhd.sig.struct_extract %s["a"] : <!hw.struct<a: i4, b: i4>>
+  llhd.drv %a, %1 after %0 if %2 : i4
 }
