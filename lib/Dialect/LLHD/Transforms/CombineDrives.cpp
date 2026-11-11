@@ -395,6 +395,20 @@ void ModuleContext::aggregateDrives(Signal &signal) {
   // overlaps.
   for (auto &[key, slices] : drives) {
     llvm::sort(slices, [](auto &a, auto &b) { return a.offset < b.offset; });
+    // A drive of the whole signal stands on its own; the drives of its parts
+    // may still cover it together (an `initial` block assigning each element
+    // of an array a register also drives as a whole).
+    auto length = getLength(signal.value.getType());
+    SmallVector<DriveSlice> whole, parts;
+    for (auto &slice : slices)
+      (slice.op && slice.offset == 0 && slice.length == length ? whole : parts)
+          .push_back(slice);
+    if (!whole.empty() && !parts.empty()) {
+      for (auto &slice : whole)
+        signal.completeDrives.push_back(slice.op);
+      aggregateDriveSlices(signal, key.first, key.second, parts);
+      continue;
+    }
     aggregateDriveSlices(signal, key.first, key.second, slices);
   }
 }

@@ -480,3 +480,26 @@ hw.module @GapWithoutInit(in %u: i4, in %v: i2) {
   llhd.assign %a, %u : i4
   llhd.assign %x, %v : i2
 }
+
+// A drive of the whole signal does not keep the drives of its parts from being
+// combined: an `initial` block assigning each element of an array that a
+// register also drives as a whole becomes one aggregate drive beside it.
+// CHECK-LABEL: @WholeAndParts
+// CHECK: [[V:%.+]] = hw.array_create %c2_i8, %c1_i8 : i8
+// CHECK: llhd.assign %a, [[V]] : !hw.array<2xi8>
+// CHECK: llhd.assign %a, %d : !hw.array<2xi8>
+// CHECK-NOT: llhd.sig.array_get
+hw.module @WholeAndParts(in %d : !hw.array<2xi8>) {
+  %c0_i8 = hw.constant 0 : i8
+  %c1_i8 = hw.constant 1 : i8
+  %c2_i8 = hw.constant 2 : i8
+  %false = hw.constant false
+  %true = hw.constant true
+  %init = hw.aggregate_constant [0 : i8, 0 : i8] : !hw.array<2xi8>
+  %a = llhd.sig %init : <!hw.array<2xi8>>
+  %e0 = llhd.sig.array_get %a[%false] : <!hw.array<2xi8>>
+  %e1 = llhd.sig.array_get %a[%true] : <!hw.array<2xi8>>
+  llhd.assign %e0, %c1_i8 : i8
+  llhd.assign %e1, %c2_i8 : i8
+  llhd.assign %a, %d : !hw.array<2xi8>
+}
